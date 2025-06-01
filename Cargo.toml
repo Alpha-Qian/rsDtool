@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "Dtool_core",
+    "Dtool_impl",
+    "Dtool_GUI",
+]
+
+[workspace.dependencies]
