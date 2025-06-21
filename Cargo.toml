@@ -3,6 +3,11 @@ members = [
     "Dtool_core",
     "Dtool_impl",
     "Dtool_GUI",
+    "rstest",
 ]
 
 [workspace.dependencies]
+reqwest = { version = "0.12", features = ["stream"] }
+tokio = { version = "1", features = ["full"] }
+parking_lot = "0.12.4"
+thiserror = "2.0.12"
