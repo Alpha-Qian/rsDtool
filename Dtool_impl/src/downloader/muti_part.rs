@@ -5,7 +5,7 @@ use reqwest::{self, Client, Response, Url};
 use tokio::{self, task::JoinSet};
 use parking_lot::RwLock;
 use anyhow::Result;
-use crate::{cache::Cacher, utils::state_sync::{get_remain_async, AsyncEndReciver, AsyncProcessSender, EndReciver, ProcessSender}};
+use crate::{cache::Cacher};
 use super::core::download_with_check_remain;
 struct Block {
     progress: AtomicU64,
