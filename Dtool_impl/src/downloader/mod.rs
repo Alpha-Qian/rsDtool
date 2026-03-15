@@ -1,6 +1,8 @@
-pub mod muti_part;
-pub mod single_part;
 pub mod builder;
-pub mod unresumeable;
 pub mod core;
 pub mod hander;
+pub mod muti_part;
+pub mod request;
+pub mod block;
+pub mod segment;
+pub mod single_thread;

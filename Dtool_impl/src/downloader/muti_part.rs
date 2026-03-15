@@ -1,96 +1,161 @@
 //!多线程下载器
-use std::{env::consts, sync::atomic::AtomicU64};
-use Dtool_core;
-use reqwest::{self, Client, Response, Url};
-use tokio::{self, task::JoinSet};
-use parking_lot::RwLock;
-use anyhow::Result;
-use crate::{cache::Cacher};
-use super::core::download_with_check_remain;
-struct Block {
-    progress: AtomicU64,
-    end: u64,
+//! 在Range为0-时不可用
+use crate::downloader::core::{ProgressRecorder, RemainGetter};
+use crate::downloader::segment::SegmentIter;
+
+//use super::core::download_with_check_remain;
+use super::request::DownloadRequest;
+use std::ops::Deref;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::{sync::atomic::AtomicU64};
+use Dtool_core::ProcessSender;
+use parking_lot::{Mutex, RwLock};
+use tokio;
+
+use super::segment::{Segment, SplitSegment};
+
+
+// type BlockShare = Hander<Inner>;
+// struct Inner {
+//     remain: AtomicU64,
+//     //end: u64,
+// }
+
+// impl Hander<Inner> {
+//     fn start_unchecked(&self) {}
+
+//     fn start(&self) {
+//         assert!(self.future_done());
+//         self.start_unchecked()
+//     }
+// }
+
+struct Hander<T>{
+    pub remain: Remain,
+    pub end: u64,
+    pub ext: T
 }
 
-impl ProcessSender for *const Block {
-    fn read(&self) -> Option<u64> {
-        Some(unsafe {(**self).progress.load(std::sync::atomic::Ordering::SeqCst)})
+impl Hander<T> {
+    pub fn process(&self) -> u64 {
+        self.end - self.remain.load(Ordering::Acquire)
     }
 
-    fn fetch_add(&mut self, len: u32) {
-        unsafe {
-            (**self).progress.fetch_add(len as u64, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-}
-
-impl EndReciver for *const Block {
-    fn read(&self) -> Option<u64> {
-        Some(unsafe {(**self).end})
+    pub fn split(&mut self, new_remain: u64) -> SplitSegment {
+        self.
     }
 }
 
 
 
-impl Block {
-    fn new(progress: u64, end: u64) -> Self {
-        Self {
-            progress: AtomicU64::new(progress),
-            end,
-        }
+///不可复制的包装器
+struct Remain(Arc<AtomicU64>);
+
+impl Remain {
+    fn only_one_owner(&self) -> bool{
+        Arc::strong_count(&self.0) == 1
     }
 
-    fn with_total_size(total_size: u64) -> Self {
-        Self::new(0, total_size)
-    }
-
-    fn as_ptr(&self) -> *const Self {
-        self as *const Self
+    fn make_two_copy(remain: u64) -> (Self, Self) {
+        let remain = Arc::new(AtomicU64::new(remain));
+        (Self(remain.clone()), Self(remain))
     }
 }
 
-struct Builder{
-    response: Response,
-    total_size: u64,
-}
-
-impl Builder {
-    
-}
-
-pub struct Downloader{
-    client: Client,
-    waiting_blocks: Vec<Box<Block>>,//后进后出
-    progress: AtomicU64,
-    total_size: u64,
-}
-
-impl Downloader{
-    fn new(url: Url, client: &'a Client, total_size: u64) -> Self {
-        Self{
-            client,
-            progress: AtomicU64::new(0),
-            total_size,
-            blocks: RwLock::new(vec![Block::with_total_size(total_size)]),
-        }
-    }
-
-    pub fn pop_block(&mut self) -> Option<Box<Block>> {
-        self.waiting_blocks.pop()
-    }
-
-    fn push_block(&mut self, block: Box<Block>) {
-        self.waiting_blocks.push(block)
-    }
-
-    pub fn download_remain_block(&mut self) -> Option<impl Future> {
-        let block = self.pop_block()?;
-        Some(Downloader::download_block(block))
-    }
-
-    fn download_block(block: Box<Block>) -> impl Future {
-        async move {
-            unimplemented!()
-        }
+impl Deref for Remain {
+    type Target = AtomicU64;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
+
+impl ProgressRecorder for Remain {
+    fn update_progress(&mut self, chunk_len: usize) {
+        
+    }
+}
+
+impl RemainGetter for Remain {
+    fn get_remain(&mut self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+///多线程下载执行器
+struct RunningBlocks<T> {
+    pub inner: Vec<Hander<T>>,
+}
+
+impl RunningBlocks<T> {
+    fn new() -> Self{
+        Self { inner: Vec::new() }
+    }
+
+    fn new_with_segment_iter<T>(iter: SegmentIter, execter: impl FnMut(Arc<AtomicU64>) -> T) -> Self {
+        //let this = Self::new();
+        //let inner = Vec::from_iter(iter)
+    }
+
+    fn into_segments(self) -> Vec<Segment>{
+        todo!()
+    }
+
+    fn split_max_running_blocks(&mut self) -> Option<_> {
+        todo!()
+    }
+
+
+    pub fn request(&self) -> &DownloadRequest {
+        &self.request
+    }
+
+    pub fn request_mut(&mut self) -> &mut DownloadRequest {
+        &mut self.request
+    }
+
+    // pub fn push_segment(&mut self, segment: Segment) -> Remain {
+    //     self.inner.push(value);
+    // }
+
+    pub fn add(&mut self, hander: Hander<_>){
+        self.inner.push(hander);
+    }
+
+    pub fn remove(&mut self, index: usize ) -> Hander<_>{
+        self.inner.swap_remove(index)
+    }
+
+    // pub fn unlock_mutex<T>(this: Mutex<Self>, func: impl FnOnce(&mut Self) -> T) -> T{
+    //     let mut guard = this.lock();
+    //     func(&mut guard)
+    // }
+
+    // pub fn read<T>(this: RwLock<Self>, func: impl FnOnce(&Self) -> T) -> T{
+    //     let guard = this.read();
+    //     func(&guard)
+    // }
+
+    // pub fn write<T>(this: RwLock<Self>, func: impl FnOnce(&mut Self) -> T) -> T{
+    //     let mut guard = this.write();
+    //     func(&mut guard)
+    // }
+}
+
+
+// struct BlockIter {
+//     current_pos: u64,
+//     total_size: u64,
+// }
+
+// impl BlockIter {
+//     fn next_block(&mut self, block_size: u64) -> Option<BlockBuilder> {
+//         if self.current_pos < self.total_size {
+//             let block = BlockBuilder::new(self.current_pos, self.current_pos + block_size);
+//             self.current_pos += block_size;
+//             Some(block)
+//         } else {
+//             None
+//         }
+//     }
+// }

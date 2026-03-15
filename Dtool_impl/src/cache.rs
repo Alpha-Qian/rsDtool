@@ -11,8 +11,8 @@ pub trait Writer {
     async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()>;
 }
 
-///为闭包的默认实现
 
+///为闭包的默认实现
 impl<T> Writer for T 
 where
     T: FnMut(&[u8]) -> std::io::Result<()>,
@@ -22,6 +22,7 @@ where
     }
 }
 
+///为闭包的默认实现
 impl<T, W> Cacher for T 
 where
     T: Fn(SeekFrom) -> W,

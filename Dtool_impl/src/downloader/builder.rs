@@ -1,12 +1,12 @@
 use headers::{ContentRange, HeaderMapExt, Range};
-use reqwest::{Client, Method, Request, Response, Url};
+use reqwest::header::HeaderMap;
+use reqwest::{Client, Method, Request, Response, Url, Version};
 use anyhow::{Result, Error};
 
 use crate::cache::Cacher;
+use crate::downloader::request::DownloadRequest;
 
-use super::unresumeable::Share as UnRangeableDownloader;
-use super::muti_part::Downloader as MultiPartDownloader;
-use super::single_part::Share as SinglePartDownloader;
+use super::muti_part::MainBuilder as MultiPartDownloader;
 
 enum Builder<'a> {
     Rangeable(RangeableBuilder<'a>),
@@ -14,19 +14,20 @@ enum Builder<'a> {
 }
 
 impl<'a> Builder<'a>{
-    pub async fn new(url: Url, client: &'a Client,) -> Result<Self> {
-        let mut request = Request::new(Method::GET, url.clone());
+    pub async fn new(download_request: DownloadRequest, client: &'a Client) -> Result<Self> {
+        let mut request: Request = download_request.new_request();
         request.headers_mut().typed_insert(Range::bytes(0..)?);
-        let response = client.execute(request).await?.error_for_status()?;
 
-        if response.status().as_u16() == 206 {
-            let total_size = response.headers().typed_get::<ContentRange>().unwrap().bytes_len().unwrap();
+        let response = client.execute(request).await?.error_for_status()?;
+        if response.status().as_u16() == 206 
+            && let Some(content_range) = response.headers().typed_get::<ContentRange>()
+            && let Some(total_size) = content_range.bytes_len()
+        {
             Ok(Self::Rangeable(RangeableBuilder::new(response, client, total_size)))
         } else {
             Ok(Self::UnRangeable(UnRangeableBuilder::new(url, client)))
         }
     }
-
 }
 
 struct RangeableBuilder<'a>{
@@ -45,10 +46,10 @@ impl<'a> RangeableBuilder<'a> {
     }
 
     fn muti_part_download(self) {
-        MultiPartDownloader::with_response(response, client, total_size)
+        //MultiPartDownloader::with_response(response, client, total_size)
     }
 
-    fn resumeable_single_thread_download(self) {
+    fn single_part_download(self) {
         unimplemented!()
     }
 }
@@ -69,7 +70,7 @@ impl<'a> UnRangeableBuilder<'a> {
     }
 
     fn unresumeable_download<C: Cacher>(self) -> UnRangeableDownloader<>{
-        UnRangeableDownloader::with_response(response, cache)
+        //UnRangeableDownloader::with_response(response, cache)
     }
 }
 
@@ -78,4 +79,6 @@ struct MultiPartBuilder{}
 struct SinglePartBuilder{}
 
 struct UnResumeableBuilder{}
+
+
 

@@ -1,5 +1,10 @@
+mod base_utils;
 mod cache;
 pub mod downloader;
-mod base_utils;
-mod main;
 mod utils;
+
+use tokio;
+
+fn main() {
+    tokio::time::sleep(duration)
+}
