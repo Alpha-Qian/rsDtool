@@ -6,3 +6,5 @@ pub mod request;
 pub mod block;
 pub mod segment;
 pub mod single_thread;
+pub mod error;
+pub mod one_part;

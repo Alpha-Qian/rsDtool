@@ -11,6 +11,24 @@ pub trait Writer {
     async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()>;
 }
 
+pub fn cache_fn(f: F) -> CacheFn<F>
+where
+    F: Fn(SeekFrom) -> W,
+    W: Writer,
+{
+    CacheFn(f)
+}
+
+pub fn writer_fn(f: F) -> WriterFn<F>
+where
+    F: FnMut(&[u8]) -> std::io::Result<()>,
+{
+    WriterFn(f)
+}
+
+struct CacheFn<F>(F);
+
+struct WriterFn<F>(F);
 
 ///为闭包的默认实现
 impl<T> Writer for T 

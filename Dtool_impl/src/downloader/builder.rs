@@ -1,7 +1,7 @@
 use headers::{ContentRange, HeaderMapExt, Range};
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Method, Request, Response, Url, Version};
-use anyhow::{Result, Error};
+use anyhow::{Error, Ok, Result};
 
 use crate::cache::Cacher;
 use crate::downloader::request::DownloadRequest;
@@ -14,19 +14,41 @@ enum Builder<'a> {
 }
 
 impl<'a> Builder<'a>{
-    pub async fn new(download_request: DownloadRequest, client: &'a Client) -> Result<Self> {
-        let mut request: Request = download_request.new_request();
-        request.headers_mut().typed_insert(Range::bytes(0..)?);
+    pub async fn new(download_info: DownloadRequest, client: &'a Client, pre_set_task_num: Option<usize>) -> Result<Self> {
+        let mut request: Request = download_info.build_request();
+        request
+            .headers_mut()
+            .typed_insert(Range::bytes(0..)?);
 
-        let response = client.execute(request).await?.error_for_status()?;
+        let response = client.execute(request)
+            .await?
+            .error_for_status()?;
         if response.status().as_u16() == 206 
             && let Some(content_range) = response.headers().typed_get::<ContentRange>()
             && let Some(total_size) = content_range.bytes_len()
         {
             Ok(Self::Rangeable(RangeableBuilder::new(response, client, total_size)))
         } else {
-            Ok(Self::UnRangeable(UnRangeableBuilder::new(url, client)))
+            todo!()
         }
+        
+        // else if let Some(length) = response.content_length()
+        //     &&{
+        //         let mut request = download_info.build_request();
+        //         request
+        //             .headers_mut()
+        //             .typed_insert(Range::bytes((length / pre_set_task_num.unwrap_or(2))..)?);
+        //         let response2 = client.execute(request)
+        //             .await?
+        //             .error_for_status()?;
+        //         response2.status().as_u16() == 206
+        //     }
+        // {
+        //     todo!()
+        // } else {
+        //     todo!()
+        // }
+
     }
 }
 

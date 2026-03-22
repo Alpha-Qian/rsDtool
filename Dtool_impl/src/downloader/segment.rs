@@ -2,15 +2,42 @@
 
 use std::sync::Arc;
 
-//use super::
+use crate::downloader::request::DownloadRequest;
+
+
+
+pub struct ResumeInfo{
+    request: DownloadRequest,
+    segments: Vec<Segment>
+}
+
+
+pub trait CodecSegment{//S 是ProgreaaSender //simple
+    type ProcessSender;
+    ///加载进度并启动
+    fn load_segment(segment: Segment) -> (self, Self::ProcessSender);
+
+    ///中途保存进度
+    fn save_as_segment(&self) -> Segment;
+}
+
+
+struct Segments{
+    inner: Vec<Segment>
+}
+
+#[derive(Clone)]
 pub struct Segment{
     pub(crate) remain: u64,
     pub(crate) end: u64
 }
 
-struct Segments{
-    inner: Vec<Segment>
+impl Segment {
+    pub fn full(size: u64) -> self{
+        Self{remain: size, end: size}
+    }
 }
+
 
 
 pub struct SplitSegment{
@@ -34,7 +61,7 @@ impl SplitSegment{
     }
 
     pub fn split_by_step(self, step: u64) -> SegmentIter{
-        SegmentIter { start , end, step }
+        SegmentIter { remain: self.remain, end: self.end, step }
     }
 }
 
@@ -58,12 +85,4 @@ impl Iterator for SegmentIter {
     }
 }
 
-trait SegmentCodec<S>{//S 是ProgreaaSender
-    fn load_segment(segment: &Segment) -> (self, S){
-        todo!()
-    }
 
-    fn save_as_segment(&self) -> Segment {
-        todo!()
-    }
-}

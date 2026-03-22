@@ -13,3 +13,5 @@ Dtool_core = { path = "../Dtool_core" }
 clap = "4.5.40"
 anyhow = "1.0.98"
 thiserror = { workspace = true }
+futures = { workspace = true }
+scopeguard = {workspace = true}

@@ -20,7 +20,7 @@ impl DownloadRequest {
         }
     }
 
-    pub fn new_request(&self) -> Request {
+    pub fn build_request(&self) -> Request {
         self.clone().into()
     }
 
