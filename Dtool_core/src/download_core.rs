@@ -59,7 +59,7 @@ pub fn skip_prefix(chunk:&[u8], len: usize) -> ControlFlow<&[u8]> {
 //     // fn get_unwarp(&self) -> u64{
 //     //     self.get_process().unwrap()
 //     // }
-}
+
 // ///同步的EndReciver
 // pub trait EndReciver{
 //     fn get_end(&self) -> Option<u64>{

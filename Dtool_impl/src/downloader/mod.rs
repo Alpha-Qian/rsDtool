@@ -1,10 +1,8 @@
 pub mod builder;
 pub mod core;
-pub mod hander;
 pub mod muti_part;
-pub mod request;
+pub mod httprequest;
 pub mod block;
 pub mod segment;
 pub mod single_thread;
-pub mod error;
 pub mod one_part;

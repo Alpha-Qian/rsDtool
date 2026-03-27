@@ -4,9 +4,8 @@ use reqwest::{Client, Method, Request, Response, Url, Version};
 use anyhow::{Error, Ok, Result};
 
 use crate::cache::Cacher;
-use crate::downloader::request::DownloadRequest;
+use crate::downloader::httprequest::RequestInfo;
 
-use super::muti_part::MainBuilder as MultiPartDownloader;
 
 enum Builder<'a> {
     Rangeable(RangeableBuilder<'a>),
@@ -14,7 +13,7 @@ enum Builder<'a> {
 }
 
 impl<'a> Builder<'a>{
-    pub async fn new(download_info: DownloadRequest, client: &'a Client, pre_set_task_num: Option<usize>) -> Result<Self> {
+    pub async fn new(download_info: RequestInfo, client: &'a Client, pre_set_task_num: Option<usize>) -> Result<Self> {
         let mut request: Request = download_info.build_request();
         request
             .headers_mut()
@@ -91,9 +90,9 @@ impl<'a> UnRangeableBuilder<'a> {
         }
     }
 
-    fn unresumeable_download<C: Cacher>(self) -> UnRangeableDownloader<>{
-        //UnRangeableDownloader::with_response(response, cache)
-    }
+    // fn unresumeable_download<C: Cacher>(self) -> UnRangeableDownloader<>{
+    //     //UnRangeableDownloader::with_response(response, cache)
+    // }
 }
 
 struct MultiPartBuilder{}

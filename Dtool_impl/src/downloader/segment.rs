@@ -1,6 +1,6 @@
 //!持久化
 
-use std::{error::Error, fmt::{Debug, Display}, mem, sync::Arc};
+use std::{error::Error, fmt::{Debug, Display}, mem, num::NonZeroUsize, ops::RangeBounds, sync::Arc};
 use std::num::NonZeroU64;
 use crate::downloader::httprequest::RequestInfo;
 
@@ -28,58 +28,71 @@ pub struct ResumeInfo{
 
 #[derive(Clone)]
 pub struct Segment{
-    pub(crate) remain: u64,
-    pub(crate) end: u64
+    pub start: u64,
+    pub remain: NonZeroU64,
 }
 
 impl Segment {
 
-    pub(crate) fn new(remain: u64, end: u64) -> Self{
-        Self { remain, end }
+    pub fn new(start: u64,remain: NonZeroU64) -> Self{
+        Self { start, remain }
     }
 
-    pub fn full(size: u64) -> self{
-        Self{remain: size, end: size}
+    // pub fn from_end_and_remain(remain: NonZeroU64, end: u64) -> Option<Self> {
+    //     Self::new(end.checked_sub(remain.into())? , remain).into()
+    // }
+
+    pub fn full(size: NonZeroU64) -> Self{
+        Self::new(0, size)
     }
 
-    pub fn start(&self) -> u64{
-        self.end - self.remain
+    pub fn end(&self) -> u64 {
+        self.start + self.remain.get()
     }
 
-    pub fn split_at(self, first_remain: u64) -> (Self, Option<Self>) {
+    pub fn split_at(self, first_remain: NonZeroU64) -> (Self, Option<Self>) {
         let mut iter = self.split_by_step(first_remain);
-        (iter.next().unwrap(), iter.try_into::<Self>().ok())
+        (iter.next().unwrap(), iter.try_into().ok())
     }
 
-    pub fn split_by_times(self, times: usize) -> SegmentIter{
-        self.split_by_step(step)
+    pub fn split_by_times(self, times: NonZeroUsize) -> SegmentIter{
+        let fix_remain = self.remain.get() + times.get() as u64;
+        self.split_by_step((fix_remain / times.get() as u64).try_into().unwrap())
     }
 
-    pub fn split_by_step(self, step: u64) -> SegmentIter{
-        SegmentIter { remain: self.remain, end: self.end, step }
+    pub fn split_by_step(self, step: NonZeroU64) -> SegmentIter{
+        SegmentIter::new(self.start, self.remain.into(), step)
     }
 }
 
+
+// impl<T: RangeBounds<u64>> TryFrom<T> for Segment {
+//     fn try_from(value: T) -> Result<Self, Self::Error> {
+        
+//     }
+// }
+
 pub struct SegmentIter{
-    step: u64,
+    step: NonZeroU64,
 
     //
-    remain: u64,
-    end: u64,
+    remain: Option<NonZeroU64>,
+    start: u64
 }
 
 impl Iterator for SegmentIter {
     type Item = Segment;
     fn next(&mut self) -> Option<Self::Item> {
-        if self.remain > self.step {
-
-            self.remain -= self.step;
-            Segment::new(self.step, self.start() ).into()
-
-        } else if self.remain > 0 {
-
-            self.remain = 0;//迭代器耗尽
-            Segment::new(remain, end).into()
+        if let Some(remain) = self.remain {
+            if remain > self.step {
+                let origin_start = self.start;
+                self.remain = NonZeroU64::new(remain.get() - self.step.get());//remain -= step
+                self.start += self.step.get();
+                Segment::new(origin_start, self.step).into()
+            } else {
+                self.remain = None;
+                Segment::new(self.start, remain).into()
+            }
 
         } else {
             None
@@ -95,48 +108,20 @@ impl TryFrom<SegmentIter> for Segment{
 }
 
 impl SegmentIter {
-    fn new(step: u64, remain: u64, end: u64) -> Self{
-        Self { step, remain, end }
+    fn new(start: u64, remain: Option<NonZeroU64>, step: NonZeroU64) -> Self {
+        Self { step, remain, start }
     }
 
-    fn start(&self) -> u64{
-        self.end - self.remain
-    }
+    // fn end(&self)
 }
 
-
-impl From<FromSegmentIterError> for CreateSegmentError {
-    fn from(value: FromSegmentIterError) -> Self {
-        Self::ZeroRemain
-    }
-}
 
 #[derive(Debug)]
 struct FromSegmentIterError;
 
 impl Display for FromSegmentIterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&"无法转换已耗尽迭代器")
+        f.write_str("无法转换已耗尽迭代器")
     }
 }
 impl Error for FromSegmentIterError{}
-
-
-#[derive(Debug)]
-enum CreateSegmentError {
-    ZeroRemain,
-    NegtiveStartPoint
-}
-
-
-// impl Debug for  {
-    
-// }
-impl Display for CreateSegmentError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match Self {
-            Self::ZeroRemain => todo!(),
-            Self::NegtiveStartPoint => todo!()
-        }
-    }
-}

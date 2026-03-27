@@ -1,17 +1,17 @@
 use anyhow::{Error, Result};
-use headers::{ContentRange, HeaderMapExt, Range};
+use headers::{ContentRange, Header, HeaderMapExt, IfMatch, Range, ETag};
 use reqwest::header::HeaderMap;
 use reqwest::{Client, Method, Request, Response, Url, Version};
 
 ///作为crate的公共api
 #[derive(Clone, Debug)]
-pub struct DownloadRequest {
+pub struct RequestInfo {
     url: Url,
-    headers: HeaderMap,
+    pub(crate) headers: HeaderMap,
     version: Version,
 }
 
-impl DownloadRequest {
+impl RequestInfo {
     pub fn new(url: Url, headers: HeaderMap) -> Self {
         Self {
             url,
@@ -65,9 +65,23 @@ impl DownloadRequest {
     pub fn version_mut(&mut self) -> &mut Version {
         &mut self.version
     }
+
+
+
+    pub fn upate_etag(&mut self, etag: ETag) {
+        if let Some(v) = self.headers.get_mut(IfMatch::name()) {
+            // etag.encode(values);
+            // IfMatch::from(value)
+        }
+    }
+
+    pub fn update_last_motifield(&mut self, date: ()) {
+        todo!()
+    }
 }
 
-impl Into<Request> for DownloadRequest {
+
+impl Into<Request> for RequestInfo {
     fn into(self) -> Request {
         let mut request = Request::new(Method::GET, self.url);
         *request.headers_mut() = self.headers;

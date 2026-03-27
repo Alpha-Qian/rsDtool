@@ -1,71 +1,27 @@
-//!多线程下载器
-//! 在Range为0-时不可用
-use crate::downloader::core::{Sender, Syncer};
-use crate::downloader::segment::{RunningSegmentsVec, SegmentIter};
+
+use crate::downloader::segment::SegmentIter;
 
 //use super::core::download_with_check_remain;
-use super::request::DownloadRequest;
-use std::ops::Deref;
+use super::httprequest::RequestInfo;
+use std::cell::UnsafeCell;
+use std::mem::ManuallyDrop;
+use std::num::NonZeroU64;
+use std::ops::{Deref, Index};
+use std::ptr;
 use std::sync::{Arc, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{sync::atomic::AtomicU64};
-use Dtool_core::ProcessSender;
 use parking_lot::{Mutex, RwLock};
 use tokio;
 use tokio::fs::File;
 use tokio::task::{AbortHandle, JoinSet, JoinHandle};
 
-use super::segment::{Segment, SplitSegment};
-
-
-// ///不可复制的包装器
-// struct Remain(Arc<AtomicU64>);
-
-// impl Remain {
-//     fn only_one_owner(&self) -> bool{
-//         Arc::strong_count(&self.0) == 1
-//     }
-
-//     fn make_two_copy(remain: u64) -> (Self, Self) {
-//         let remain = Arc::new(AtomicU64::new(remain));
-//         (Self(remain.clone()), Self(remain))
-//     }
-// }
-
-// impl Deref for Remain {
-//     type Target = AtomicU64;
-//     fn deref(&self) -> &Self::Target {
-//         &self.0
-//     }
-// }
-
-// impl ProgressRecorder for Remain {
-//     fn update_progress(&mut self, chunk_len: usize) {
-        
-//     }
-// }
-
-// impl RemainGetter for Remain {
-//     fn get_remain(&mut self) -> u64 {
-//         self.0.load(Ordering::Acquire)
-//     }
-// }
-
-
-// type test<T> = RunningSegments<Weak<T>>;
-
-
-///多线程下载执行器
-
+use super::segment::{Segment};
 
 
 use futures::task::AtomicWaker;
 use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::task::{Context, Poll};
-use tokio::task::{JoinError, JoinHandle};
 
 pub struct Downloader {
     share: Arc<Share>,
@@ -76,26 +32,21 @@ impl Downloader {
     pub fn process(&self) -> u64 {
         self.share.process.load(Ordering::Relaxed)
     }
-
-    pub fn stop_all(&mut self){
-        self.abort_all();
-    }
 }
 
 struct Share{
-    locked: Mutex<Locked>,
+    locked: Mutex<LockedShare>,
+    waker: AtomicWaker,
     process: AtomicU64,
-    requests: DownloadRequest,
-    file: File,
+    requests: RequestInfo,
+    //file: File,
     target_task_num: AtomicUsize,
     task_num: AtomicUsize,
 }
 
-struct Locked {
-    slots: Vec<Slot>,
+struct LockedShare {
+    slots: Vec<Slot>, //or named running_slots?
     idie_segments: Vec<Segment>,
-    // 精细化管理：当任务完成并从 Vec 移除时，唤醒正在等待的 join_next
-    waker: AtomicWaker,
 }
 
 
@@ -117,27 +68,66 @@ impl Slot {
         }
     }
 
-    fn index_ref(&self) -> &AtomicUsize{
-        &self.share.index_ref
-    }
-
     fn remain(&self) -> &AtomicU64{
         &self.share.remain
     }
+
+    fn get_index(&self) -> *mut usize {
+        self.share.index.0.get()
+    }
+
+    // fn into_segment(self) -> Option<Segment> {
+    //     let share = self.share.as_raw()
+    //     //let remain = self.share.remain.get_mut().clone();
+    //     let nonzero = NonZeroU64::new(remain)?;
+    //     Segment::new(self.end - remain, nonzero).into()
+    // }
 }
 
 struct SlotShare{
-    index_ref: AtomicUsize,
+    index: SyncUnsafeCell<usize>,
     remain: AtomicU64,
 }
+
+
 
 impl SlotShare {
     fn new_pair(index_ref: usize, remain: u64) -> (Arc<SlotShare>, Arc<SlotShare>) {
         let share: Arc<_> =SlotShare{
-            index_ref: index_ref.into(),
+            index: index_ref.into(),
             remain: remain.into()
         }.into();
         (share.clone(), share)
+    }
+}
+
+
+struct Hander{
+    share: Share,
+    slot_share: SlotShare
+}
+
+trait HanderControl{
+    fn run(segment: Segment) -> Self;
+    fn abort(&mut self);
+}
+
+impl Hander {
+    pub fn downloaded_len(&mut self, len: u64) -> u64{
+        todo!()
+    }
+
+    pub fn writed_len(&mut self, len: u64) -> u64{
+        todo!()
+    }
+
+
+    fn wake(&self) {
+        self.share.waker.wake();
+    }
+
+    fn delete_hander_control(&self){
+        todo!()
     }
 }
 
@@ -202,7 +192,7 @@ impl Downloader {
         } else{
             // 注册当前 Context 的 Waker
             // 当任何一个任务执行完“自清理”逻辑后，会调用 inner.waker.wake()
-            inner.waker.register(cx.waker());
+            self.share.waker.register(cx.waker());
 
             // 注意：由于是自清理，我们不需要在这里 poll 每一个 JoinHandle
             // 只要任务完成，它就会把自己从 Vec 删掉，并触发上面的 wake()
@@ -216,12 +206,12 @@ impl Downloader {
         futures::future::poll_fn(|cx| self.poll_wait_all(cx)).await
     }
 
-    pub fn poll_wait_next()
+    // pub fn poll_wait_next()
 
-    fn abort_all(&mut self) {
-        let inner= self.share.locked.lock();
-        for i in inner.slots{ i.handle.abort(); }
-    }
+    // fn abort_all(&mut self) {
+    //     let inner= self.share.locked.lock();
+    //     for i in inner.slots{ i.handle.abort(); }
+    // }
 
     fn shutdown(&mut self) {
         self.abort_all();
@@ -229,25 +219,31 @@ impl Downloader {
     }
 }
 
-async fn download_segment(client: Client, share: Arc<Share>, slot_share: Arc<SlotShare>, start: u64) -> Result<(),()>{
-    let request = share.requests.build_request();
-    let response = client.execute(request).await?;
-    struct Sync{
-        share: Arc<Share>,
-        slot_share: Arc<SlotShare>,
-    }
+impl LockedShare {
 
-    impl Syncer for Sync {
-        fn get_remain(&self) -> u64 {
-            self.slot_share.remain.load(Ordering::Acquire)
+    fn swap_remove(&mut self, index: usize) -> Segment{
+        let removed = self.slots.swap_remove(index);
+
+        if index != self.slots.len() {
+            *self.get_slot_index_mut(index) = index;
         }
 
-        fn update_remain(&mut self, chunk_len: usize) -> u64 {
-            self.slot_share.remain.fetch_update(set_order, fetch_order, f)
+    }
+
+
+    fn get_slot_index_mut(&mut self, index: usize) -> &mut usize {
+        //Safety: 我们有一个独占的&mut self，
+        unsafe{
+            &mut *self.slots[index].get_index()
         }
     }
 
-    download_with_check_remain(response, writer, S).await?;
+    fn get_slot_index_ref(&self, index: usize) -> &usize {
+        //Safety: 我们有&self，保证没有其他的&mut self
+        unsafe {
+            & *self.slots[index].get_index()
+        }
+    }
 }
 
 enum RunningState {
@@ -256,3 +252,14 @@ enum RunningState {
 }
 
 use reqwest::{Client, Error, Response};
+
+
+struct SyncUnsafeCell<T>(UnsafeCell<T>);
+
+unsafe impl<T: Sync> Sync for SyncUnsafeCell<T>{}
+
+impl<T> From<T> for SyncUnsafeCell<T> {
+    fn from(value: T) -> Self {
+        Self(value.into())
+    }
+}
