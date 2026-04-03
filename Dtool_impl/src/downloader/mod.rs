@@ -6,4 +6,4 @@ pub mod block;
 pub mod segment;
 pub mod one_part;
 pub mod control;
-pub mod share_ptr_family;
+pub mod family;

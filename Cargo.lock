@@ -28,6 +28,7 @@ dependencies = [
  "futures",
  "headers",
  "parking_lot",
+ "radium",
  "reqwest",
  "scopeguard",
  "thiserror 2.0.12",
@@ -2810,6 +2811,15 @@ name = "r-efi"
 version = "5.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74765f6d916ee2faa39bc8e68e4f3ed8949b48cccdac59983d287a7cb71ce9c5"
+
+[[package]]
+name = "radium"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1775bc532a9bfde46e26eba441ca1171b91608d14a3bae71fea371f18a00cffe"
+dependencies = [
+ "cfg-if",
+]
 
 [[package]]
 name = "rand"
