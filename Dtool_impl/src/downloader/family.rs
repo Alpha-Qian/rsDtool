@@ -1,47 +1,46 @@
-use std::{cell::{Cell, RefCell, UnsafeCell}, ops::{Deref, DerefMut}, rc::Rc, sync::{Arc, atomic::AtomicPtr}, task::Context};
+use std::{cell::{Cell, RefCell, RefMut}, ops::{Deref, DerefMut}, rc::Rc, sync::Arc};
 
-use futures::future::IntoStream;
 use radium::{Radium, marker::{Atomic, Nuclear}};
-use radium::{Atom, Radon, Isotope};
-use scopeguard::defer;
-
-use std::future::Future;
+use radium::Atom;
 
 
-trait SyncKind{
+
+pub trait SyncKind{
     type SharePtr<T>: ShareExt;
 
-    type MaybeAtom<T: Atomic + PartialEq + Nuclear>: Radium<Item = T>
-        where Cell<T>: Radium<Item = T>;
+    type MaybeAtom<T: Atomic + PartialEq>: Radium<Item = T>
+        where Cell<T>: Radium<Item = T>
+        ;
 
     type DataLock<T>: MaybeMutex<Item = T>;
 }
 
-trait ShareExt: Deref + Clone{//Maybe Send
+pub trait ShareExt: Deref + Clone{//Maybe Send
     fn new(v: Self::Target) -> Self;
 }
 
-// trait Atomable : Atomic + PartialEq + Nuclear{
-
-// }
-
-trait MaybeMutex{
+pub trait MaybeMutex{
     type Item;
-    type Guard<'a>: DerefMut<Target = Self::Item>// + Drop 针对std::cell::RefMut
+    type Guard<'a>: DerefMut<Target = Self::Item>// + Drop 针对RefMut
         where Self: 'a;
     
     fn lock(&self) -> Self::Guard<'_>;
 }
 
+//快捷方式：
+pub type SharePtr<F, T> = <F as SyncKind>::SharePtr<T>;//StaticPtr
+pub type MaybeAtomic<F, T> = <F as SyncKind>::MaybeAtom<T>;//share Num
+pub type DataLock<F, T> = <F as SyncKind>::DataLock<T>;//share struct
 
 //  具体实现：
 
 //需要在多线程中运行：
-struct MutiThread;
+pub struct MutiThread;
 impl SyncKind for MutiThread {
     type SharePtr<T> = Arc<T>;
-    type MaybeAtom<T: Atomic + PartialEq + Nuclear> = Atom<T>
-         where Cell<T>: Radium<Item = T>,;
+    type MaybeAtom<T: Atomic + PartialEq> = Atom<T>
+        where Cell<T>: Radium<Item = T>
+        ;
     type DataLock<T> = parking_lot::Mutex<T>;
 }
 
@@ -63,12 +62,13 @@ impl<T> MaybeMutex for parking_lot::Mutex<T> {
 
 
 //只需要在单线程环境中运行：
-struct SingleThread;
+pub struct SingleThread;
 impl SyncKind for SingleThread {
     type SharePtr<T> = Rc<T>;
-    type MaybeAtom<T: Atomic + PartialEq + Nuclear> = Cell<T>
-        where Cell<T>: Radium<Item = T>;
-    type DataLock<T> = std::cell::RefCell<T>;
+    type MaybeAtom<T: Atomic + PartialEq> = Cell<T>
+        where Cell<T>: Radium<Item = T>
+        ;
+    type DataLock<T> = RefCell<T>;
 }
 
 impl<T> ShareExt for Rc<T> {
@@ -77,9 +77,9 @@ impl<T> ShareExt for Rc<T> {
     }
 }
 
-impl<T> MaybeMutex for std::cell::RefCell<T> {
+impl<T> MaybeMutex for RefCell<T> {
     type Item = T;
-    type Guard<'a> = std::cell::RefMut<'a, T>
+    type Guard<'a> = RefMut<'a, T>
             where Self: 'a;
     fn lock(&self) -> Self::Guard<'_> {
         self.borrow_mut()
