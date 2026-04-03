@@ -1,15 +1,15 @@
 use std::cell::UnsafeCell;
 use std::num::NonZeroU64;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{sync::atomic::AtomicU64};
-use parking_lot::Mutex;
 
 use super::segment::Segment;
 
 use std::task::{Context, Poll, Waker};
 
 
+use super::family::{SyncKind, SingleThread, MutiThread, MaybeMutex, SharePtrExt, SharePtr};
+use radium::Radium;
 
 ///segment to worker part
 
@@ -19,9 +19,9 @@ trait SegmentToWorker{
     fn new(segment: Segment) -> Self::Output;
 }
 
-struct Control<T, U>{ //segment to worker controler
-    download: DownloaderGroup<U>,
-    share: Arc<ControlShared>,
+struct Control<'a, F: SyncKind, T, U>{ //segment to worker controler
+    download: DownloaderGroup<'a, F, U>,
+    share: F::SharePtr<'static, ControlShared>,
     segment_to_worker: T,
 }
 
@@ -30,14 +30,14 @@ struct ControlShared{
     targit_task_num: AtomicUsize,
 }
 
-impl<T: SegmentToWorker> Control<T, T::Output> {
+impl<'a, F: SyncKind, T: SegmentToWorker> Control<'a, F, T, T::Output> {
     fn new_task(&self) -> Result<(), ()>{
         let guard = self.download.share.locked.lock();
         //guard.idie_segments.pop().or(optb)
         let segment: Segment = guard.idie_segments.pop().or(
             {
                 let max_slot = None;
-                guard.running_slots.iter().for_each(|s| )
+                guard.running_slots.iter().for_each(|s|{} );
                 todo!()
             }
         ).ok_or(())?;
@@ -53,16 +53,17 @@ trait ProcessTrack {
     fn writed(len: usize);
 }
 
-pub struct DownloaderGroup<T> {
-    share: Arc<GroupShare<T>>,
+pub struct DownloaderGroup<'a, F: SyncKind, T: 'a> {
+    share: F::SharePtr<'a, GroupShare<F, T>>,
+    waker: Waker,
 }
 
-impl<T> DownloaderGroup<T> {
+impl<'a, F: SyncKind, T> DownloaderGroup<'a, F, T> {
     async fn new() -> Self{
 
     }
 }
-impl<T> Future for DownloaderGroup<T> {
+impl<'a, F: SyncKind, T> Future for DownloaderGroup<'a, F, T> {
     type Output = ();
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.poll_wait_all(cx)
@@ -71,21 +72,22 @@ impl<T> Future for DownloaderGroup<T> {
 
 
 
-struct GroupShare<T>{
-    locked: Mutex<LockedShare<T>>,
+struct GroupShare<F: SyncKind, T>{
+    locked: F::DataLock<LockedShare<F, T>>,
     //waker: Waker,
     //TODO: waker is cloneable!!!
-    process: AtomicU64,
+    //waker相当于自带了一个Arc，不用放在Arc<GroupShare>里
+    process: F::MaybeAtom<u64>,
 
 }
 
-struct LockedShare<T> {
-    running_slots: Vec<Slot<T>>, //or named running_slots?
+struct LockedShare<F: SyncKind, T> {
+    running_slots: Vec<Slot<F, T>>, //or named running_slots?
     idie_segments: Vec<Segment>,
 }
 
 
-impl<T: Abort> LockedShare<T> {
+impl<F: SyncKind, T: Abort> LockedShare<F, T> {
 
     fn swap(&mut self, a: usize, b: usize) {
         self.running_slots.swap(a, b);
@@ -120,22 +122,24 @@ impl<T: Abort> LockedShare<T> {
         }
     }
 
-    fn push(&mut self, value: Slot<T>) {
+    fn push(&mut self, value: Slot<F, T>) {
         self.running_slots.push(value);
     }
 }
 
 /// 内部存储项
-struct Slot<T> {
+struct Slot<F: SyncKind, T> {
     abort_handler: T,
     
-    share: Arc<SlotShare>,
+    share: F::SharePtr<'static, SlotShare>,
     end: u64,
+
+    waker: Waker,//callback
 }
 
-impl<T: Abort> Slot<T> {
+impl<F: SyncKind, T: Abort> Slot<F, T> {
 
-    fn new(handle: T, share: Arc<SlotShare>, end: u64) -> Self{
+    fn new(handle: T, share: F::SharePtr<'static, SlotShare>, end: u64) -> Self{
         Self{
             abort_handler: handle,
             share,
@@ -158,6 +162,10 @@ impl<T: Abort> Slot<T> {
         Segment::new(start, remain).into()
     }
 
+    fn wake(self) {//notifield
+        self.waker.wake();
+    }
+
 }
 
 struct SlotShare{
@@ -169,18 +177,18 @@ struct SlotShare{
 
 
 impl SlotShare {
-    fn new_pair(index_ref: usize, remain: u64) -> (Arc<SlotShare>, Arc<SlotShare>) {
-        let share: Arc<_> =SlotShare{
+    fn new_pair<F: SyncKind>(index_ref: usize, remain: u64) -> (F::SharePtr<'static, SlotShare>, F::SharePtr<'static, SlotShare>) {
+        let share = F::SharePtr::new( SlotShare{
             index: index_ref.into(),
             remain: remain.into()
-        }.into();
+        });
         (share.clone(), share)
     }
 }
 
 
-struct StateSender<T>{
-    share: GroupShare<T>,
+struct StateSender<F: SyncKind, T>{
+    share: GroupShare<F, T>,
     slot_share: SlotShare
 }
 
@@ -188,7 +196,7 @@ trait Abort{
     fn abort(&mut self);
 }
 
-impl<T> StateSender<T> {
+impl<F: SyncKind, T> StateSender<F, T> {
     pub fn downloaded_len(&mut self, len: u64) -> u64{
         todo!()
     }
@@ -220,7 +228,7 @@ impl<T> StateSender<T> {
 // }
 
 
-impl<T> DownloaderGroup<T> {
+impl<'a, F: SyncKind, T> DownloaderGroup<'a, F, T> {
 
 
     // pub fn new_task<F>(&self, future: F, response: Option<Response>)
@@ -272,6 +280,7 @@ impl<T> DownloaderGroup<T> {
 
     pub async fn wait_all(&self) -> Option<()> {
         //futures::future::poll_fn(|cx| self.poll_wait_all(cx)).await
+        todo!()
     }
 
     // pub fn poll_wait_next()
@@ -282,7 +291,7 @@ impl<T> DownloaderGroup<T> {
     // }
 }
 
-impl<T> GroupShare<T> {
+impl<F: SyncKind, T> GroupShare<F, T> {
     pub fn poll_wait_all(&self, cx: &mut Context<'_>) -> Poll<()> {
         let inner = self.locked.lock();
         
