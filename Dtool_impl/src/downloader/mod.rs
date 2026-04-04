@@ -1,6 +1,6 @@
 pub mod builder;
 pub mod core;
-pub mod muti_part;
+pub mod download_group;
 pub mod httprequest;
 pub mod segment;
 pub mod one_part;
