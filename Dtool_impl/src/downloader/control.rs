@@ -1,4 +1,4 @@
 use std::sync::{Arc, atomic::AtomicUsize};
 
-use crate::downloader::muti_part::DownloaderGroup;
+use crate::downloader::download_group::DownloadGroup;
 
