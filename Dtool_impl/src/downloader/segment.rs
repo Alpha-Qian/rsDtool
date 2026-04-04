@@ -12,20 +12,6 @@ pub struct ResumeInfo{
 }
 
 
-// pub trait CodecSegment{//S 是ProgreaaSender //simple
-//     type ProcessSender;
-//     ///加载进度并启动
-//     fn load_segment(segment: Segment) -> (self, Self::ProcessSender);
-
-//     ///中途保存进度
-//     fn save_as_segment(&self) -> Segment;
-// }
-
-
-// struct Segments{
-//     inner: Vec<Segment>
-// }
-
 #[derive(Clone)]
 pub struct Segment{
     pub start: u64,
@@ -55,12 +41,12 @@ impl Segment {
         (iter.next().unwrap(), iter.try_into().ok())
     }
 
-    pub fn split_by_times(self, times: NonZeroUsize) -> SegmentIter{
+    pub fn split_by_times(self, times: NonZeroUsize) -> SegmentIter {
         let fix_remain = self.remain.get() + times.get() as u64;
         self.split_by_step((fix_remain / times.get() as u64).try_into().unwrap())
     }
 
-    pub fn split_by_step(self, step: NonZeroU64) -> SegmentIter{
+    pub fn split_by_step(self, step: NonZeroU64) -> SegmentIter {
         SegmentIter::new(self.start, self.remain.into(), step)
     }
 }

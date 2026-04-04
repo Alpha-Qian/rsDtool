@@ -8,20 +8,19 @@ use super::segment::Segment;
 use std::task::{Context, Poll, Waker};
 
 
-use super::family::{SyncKind, SingleThread, MutiThread, MaybeMutex, SharePtrExt, SharePtr};
+use super::family::{ThreadModel, Lockable, RefCounted, RefCounter, AtomicCell, Mutex};
 use radium::Radium;
 
 ///segment to worker part
-
 
 trait SegmentToWorker{
     type Output : Abort;
     fn new(segment: Segment) -> Self::Output;
 }
 
-struct Control<'a, F: SyncKind, T, U>{ //segment to worker controler
+struct Control<'a, F: ThreadModel, T, U>{ //segment to worker controler
     download: DownloaderGroup<'a, F, U>,
-    share: F::SharePtr<'static, ControlShared>,
+    share: F::RefCounter<'static, ControlShared>,
     segment_to_worker: T,
 }
 
@@ -30,9 +29,9 @@ struct ControlShared{
     targit_task_num: AtomicUsize,
 }
 
-impl<'a, F: SyncKind, T: SegmentToWorker> Control<'a, F, T, T::Output> {
+impl<'a, F: ThreadModel, T: SegmentToWorker> Control<'a, F, T, T::Output> {
     fn new_task(&self) -> Result<(), ()>{
-        let guard = self.download.share.locked.lock();
+        let mut guard = self.download.share.locked.lock();
         //guard.idie_segments.pop().or(optb)
         let segment: Segment = guard.idie_segments.pop().or(
             {
@@ -53,17 +52,22 @@ trait ProcessTrack {
     fn writed(len: usize);
 }
 
-pub struct DownloaderGroup<'a, F: SyncKind, T: 'a> {
-    share: F::SharePtr<'a, GroupShare<F, T>>,
+
+// Download Group
+
+pub struct DownloaderGroup<'a, F: ThreadModel, T: 'a> {
+    share: F::RefCounter<'a, GroupShare<F, T>>,
     waker: Waker,
 }
 
-impl<'a, F: SyncKind, T> DownloaderGroup<'a, F, T> {
+impl<'a, F: ThreadModel, T> DownloaderGroup<'a, F, T> {
     async fn new() -> Self{
-
+        todo!()
     }
 }
-impl<'a, F: SyncKind, T> Future for DownloaderGroup<'a, F, T> {
+
+/// TODO: 移动到专用的异步包装器上
+impl<'a, F: ThreadModel, T> Future for DownloaderGroup<'a, F, T> {
     type Output = ();
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.poll_wait_all(cx)
@@ -71,23 +75,20 @@ impl<'a, F: SyncKind, T> Future for DownloaderGroup<'a, F, T> {
 }
 
 
-
-struct GroupShare<F: SyncKind, T>{
-    locked: F::DataLock<LockedShare<F, T>>,
-    //waker: Waker,
-    //TODO: waker is cloneable!!!
-    //waker相当于自带了一个Arc，不用放在Arc<GroupShare>里
-    process: F::MaybeAtom<u64>,
-
+///专为下载任务特化的任务管理器，运行时无关
+struct GroupShare<F: ThreadModel, T>{
+    locked: F::Mutex<LockedShare<F, T>>,
+    process: F::AtomicCell<u64>,
 }
 
-struct LockedShare<F: SyncKind, T> {
-    running_slots: Vec<Slot<F, T>>, //or named running_slots?
-    idie_segments: Vec<Segment>,
+struct LockedShare<F: ThreadModel, T> {
+    running_slots: Vec<Slot<F, T>>,
+    idie_segments: Vec<Segment>,//也许可以去掉
+    //pub ext_data: GroupExt
 }
 
 
-impl<F: SyncKind, T: Abort> LockedShare<F, T> {
+impl<F: ThreadModel, T: Abort> LockedShare<F, T> {
 
     fn swap(&mut self, a: usize, b: usize) {
         self.running_slots.swap(a, b);
@@ -97,14 +98,15 @@ impl<F: SyncKind, T: Abort> LockedShare<F, T> {
         };
     }
 
-    fn swap_remove(&mut self, index: usize) -> Option<Segment> {
+    fn swap_remove_slot(&mut self, index: usize) -> Option<Slot<F, T>> {
         let removed = self.running_slots.swap_remove(index);
 
         if index != self.running_slots.len() {
             *self.get_slot_index_mut(index) = index;
         }
 
-        removed.into_segment()
+        //removed.into_segment()
+        removed.into()
     }
 
 
@@ -128,18 +130,16 @@ impl<F: SyncKind, T: Abort> LockedShare<F, T> {
 }
 
 /// 内部存储项
-struct Slot<F: SyncKind, T> {
-    abort_handler: T,
-    
-    share: F::SharePtr<'static, SlotShare>,
+struct Slot<F: ThreadModel, T> {
+    share: RefCounter<F, SlotShare<F>>, //F::RefCounter<'static, SlotShare<F>>,
     end: u64,
 
-    waker: Waker,//callback
+    abort_handler: T,//pub SlotExt
 }
 
-impl<F: SyncKind, T: Abort> Slot<F, T> {
+impl<F: ThreadModel, T: Abort> Slot<F, T> {
 
-    fn new(handle: T, share: F::SharePtr<'static, SlotShare>, end: u64) -> Self{
+    fn new(handle: T, share: RefCounter<F, SlotShare<F>>, end: u64) -> Self{
         Self{
             abort_handler: handle,
             share,
@@ -147,7 +147,7 @@ impl<F: SyncKind, T: Abort> Slot<F, T> {
         }
     }
 
-    fn remain(&self) -> &AtomicU64{
+    fn remain(&self) -> &F::AtomicCell<u64>{
         &self.share.remain
     }
 
@@ -161,24 +161,20 @@ impl<F: SyncKind, T: Abort> Slot<F, T> {
 
         Segment::new(start, remain).into()
     }
-
-    fn wake(self) {//notifield
-        self.waker.wake();
-    }
-
 }
 
-struct SlotShare{
+struct SlotShare<F: ThreadModel>{
     // 指向自己当前索引的共享引用
     index: SyncUnsafeCell<usize>,
-    remain: AtomicU64,
+    remain: F::AtomicCell<u64>,
+    //pub ext: E::
 }
 
 
 
-impl SlotShare {
-    fn new_pair<F: SyncKind>(index_ref: usize, remain: u64) -> (F::SharePtr<'static, SlotShare>, F::SharePtr<'static, SlotShare>) {
-        let share = F::SharePtr::new( SlotShare{
+impl<F: ThreadModel> SlotShare<F> {
+    fn new_pair(index_ref: usize, remain: u64) -> (F::RefCounter<'static, SlotShare<F>>, F::RefCounter<'static, SlotShare<F>>) {
+        let share = F::RefCounter::new( SlotShare{
             index: index_ref.into(),
             remain: remain.into()
         });
@@ -186,34 +182,45 @@ impl SlotShare {
     }
 }
 
-
-struct StateSender<F: SyncKind, T>{
-    share: GroupShare<F, T>,
-    slot_share: SlotShare
-}
-
 trait Abort{
     fn abort(&mut self);
 }
 
-impl<F: SyncKind, T> StateSender<F, T> {
-    pub fn downloaded_len(&mut self, len: u64) -> u64{
-        todo!()
-    }
-
-    pub fn writed_len(&mut self, len: u64) -> u64{
-        todo!()
-    }
-
-    pub fn set_state(&mut self)
-
-    fn wake_executer(&self) {
-        self.share.waker.wake();
-    }
-
-    fn remove_hander_control()
+///每个下载分块向下载组报告状态的结构体
+struct StateReporter<F: ThreadModel, T>{
+    share: GroupShare<F, T>,
+    slot_share: SlotShare<F>
 }
 
+impl<F: ThreadModel, T> StateReporter<F, T> {
+    pub fn report_downloaded_len(&mut self, len: u64) -> u64{
+        todo!()
+    }
+
+    pub fn report_writed_len(&mut self, len: u64) -> u64{
+        todo!()
+    }
+
+    pub fn set_state(&mut self){
+        todo!()
+    }
+
+    pub fn remove_slot(&self) {
+        todo!()
+    }
+    //state或许用泛型好些
+
+    // 弃用：移动到异步包装器
+    // fn wake_executer(&self) { 这个方法应该在group control上
+    //     self.share.waker.wake();
+    // }
+
+    // fn remove_hander_control(&mut self){
+    //     self.share.locked.
+    // }
+}
+
+struct Remain(pub u64);
 // struct WriteCorrect<'a, T>{
 //     hander: &'a mut Hander<T>,
 //     len: u64,
@@ -228,7 +235,7 @@ impl<F: SyncKind, T> StateSender<F, T> {
 // }
 
 
-impl<'a, F: SyncKind, T> DownloaderGroup<'a, F, T> {
+impl<'a, F: ThreadModel, T> DownloaderGroup<'a, F, T> {
 
 
     // pub fn new_task<F>(&self, future: F, response: Option<Response>)
@@ -266,6 +273,9 @@ impl<'a, F: SyncKind, T> DownloaderGroup<'a, F, T> {
     // }
 
     /// 核心：实现类似 Stream 的 poll_next 逻辑
+    /// 
+    /// TODO: 移动到专用的异步包装器上
+    /// 
     pub fn poll_wait_all(&self, cx: &mut Context<'_>) -> Poll<()> {
         todo!("move this method to GroupShare");
         let inner = self.share.locked.lock();
@@ -291,28 +301,51 @@ impl<'a, F: SyncKind, T> DownloaderGroup<'a, F, T> {
     // }
 }
 
-impl<F: SyncKind, T> GroupShare<F, T> {
+/// 核心：实现类似 Stream 的 poll_next 逻辑
+    /// 
+    /// TODO: 移动到专用的异步包装器上
+    /// 
+impl<F: ThreadModel, T> GroupShare<F, T> {
     pub fn poll_wait_all(&self, cx: &mut Context<'_>) -> Poll<()> {
         let inner = self.locked.lock();
         
         if inner.running_slots.is_empty() {
             Poll::Ready(())
         } else{
-            self.waker.register(cx.waker());todo!("处理这个")
+            self.waker.register(cx.waker());
             Poll::Pending
         }
     }
 }
 
+trait ProcessRecordKind{
+    type State;
+    type Downloaded<T>: Radium<Item = T>;
+    type Writed<T>: Radium<Item = T>;
 
+    fn report_downloaded_len(len: u64)
 
-enum RunningState {
-    Getting,
-    Downloading,
-    Done,
-    Error,
 }
 
+///感觉有点多余？
+trait Ext{
+    type GroupShareExt;
+    type LockedShareExt;//
+    type SlotShareExt;
+    type SlotExt;
+
+    type SlotState;
+    fn report_save_len(len: u64);
+
+    fn report_slot_state(state: Self::SlotState);
+
+    fn done()
+}
+
+struct ExtHander<'a, E: Ext>{
+    group_share: &'a E::GroupShareExt,
+    slot_share: &'a E::SlotShareExt
+}
 
 
 ///tools

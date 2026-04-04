@@ -4,58 +4,57 @@ use radium::{Radium, marker::{Atomic, Nuclear}};
 use radium::Atom;
 
 
+//命名参考：https://aistudio.google.com/prompts/1kdVbB3yyDukhLxzDQZ6XTWpbUyWQ1eMg
 
-pub trait SyncKind: 'static{
-    //type SharePtr<T>: ShareExt;
-    type SharePtr<'a, T: 'a>: SharePtrExt<Target = T> + 'a; //要求SharePtr<T>必须活得和T一样久
+pub trait ThreadModel: 'static{
+    
+    type RefCounter<'a, T: 'a>: RefCounted<Target = T> + 'a; //要求SharePtr<T>必须活得和T一样久
 
-    type MaybeAtom<T: Atomic + PartialEq>: Radium<Item = T>
-        where Cell<T>: Radium<Item = T>
-        ;
+    type AtomicCell<T: Atomic + PartialEq>: Radium<Item = T>
+        where 
+            Cell<T>: Radium<Item = T>;
 
-    type DataLock<T>: MaybeMutex<Item = T>;
+    type Mutex<T>: Lockable<Item = T>;
 }
 
-pub trait SharePtrExt: Deref + Clone{//Maybe Send
+pub trait RefCounted: Deref + Clone{
     fn new(v: Self::Target) -> Self;
 }
 
-pub trait MaybeMutex{
+pub trait Lockable{
     type Item;
-    type Guard<'a>: DerefMut<Target = Self::Item>// + Drop 针对RefMut
+    type Guard<'a>: DerefMut<Target = Self::Item>// 去掉 Drop 针对RefMut
         where Self: 'a;
     
     fn lock(&self) -> Self::Guard<'_>;
-
-    //async fn update
 }
 
 //快捷方式：
-pub type SharePtr<'a, F: SyncKind, T> = F::SharePtr<'a, T>;//StaticPtr
-pub type MaybeAtomic<F: SyncKind, T> = F::MaybeAtom<T>;//share Num
-pub type DataLock<F: SyncKind, T> = F::DataLock<T>;//share struct
+pub type RefCounter<F: ThreadModel, T> = F::RefCounter<'static, T>;
+pub type AtomicCell<F: ThreadModel, T> = F::AtomicCell<T>;
+pub type Mutex<F: ThreadModel, T> = F::Mutex<T>;
 
-pub type StaticPtr<F: SyncKind, T> = SharePtr<'static, F, T>;
+
 
 //  具体实现：
 
 //需要在多线程中运行：
-pub struct MutiThread;
-impl SyncKind for MutiThread {
-    type SharePtr<'a, T: 'a> = Arc<T>;
-    type MaybeAtom<T: Atomic + PartialEq> = Atom<T>
+pub struct ThreadSafe;
+impl ThreadModel for ThreadSafe {
+    type RefCounter<'a, T: 'a> = Arc<T>;
+    type AtomicCell<T: Atomic + PartialEq> = Atom<T>
         where Cell<T>: Radium<Item = T>
         ;
-    type DataLock<T> = parking_lot::Mutex<T>;
+    type Mutex<T> = parking_lot::Mutex<T>;
 }
 
-impl<T> SharePtrExt for Arc<T> {
+impl<T> RefCounted for Arc<T> {
     fn new(v: Self::Target) -> Self {
         Arc::new(v)
     }
 }
 
-impl<T> MaybeMutex for parking_lot::Mutex<T> {
+impl<T> Lockable for parking_lot::Mutex<T> {
     type Item = T;
     type Guard<'a> = parking_lot::MutexGuard<'a, Self::Item>
         where Self: 'a;
@@ -67,22 +66,22 @@ impl<T> MaybeMutex for parking_lot::Mutex<T> {
 
 
 //只需要在单线程环境中运行：
-pub struct SingleThread;
-impl SyncKind for SingleThread {
-    type SharePtr<'a, T: 'a> = Rc<T>;
-    type MaybeAtom<T: Atomic + PartialEq> = Cell<T>
+pub struct ThreadLocal;
+impl ThreadModel for ThreadLocal {
+    type RefCounter<'a, T: 'a> = Rc<T>;
+    type AtomicCell<T: Atomic + PartialEq> = Cell<T>
         where Cell<T>: Radium<Item = T>
         ;
-    type DataLock<T> = RefCell<T>;
+    type Mutex<T> = RefCell<T>;
 }
 
-impl<T> SharePtrExt for Rc<T> {
+impl<T> RefCounted for Rc<T> {
     fn new(v: Self::Target) -> Self {
         Rc::new(v)
     }
 }
 
-impl<T> MaybeMutex for RefCell<T> {
+impl<T> Lockable for RefCell<T> {
     type Item = T;
     type Guard<'a> = RefMut<'a, T>
             where Self: 'a;
