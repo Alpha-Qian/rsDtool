@@ -22,7 +22,7 @@ pub trait RefCounted: Deref + Clone{
 }
 
 pub trait Lockable{
-    type Item;
+    type Item where ;
     type Guard<'a>: DerefMut<Target = Self::Item>// 去掉 Drop 针对RefMut
         where Self: 'a;
     
