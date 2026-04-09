@@ -3,7 +3,7 @@ use reqwest::header::HeaderMap;
 use reqwest::{Client, Method, Request, Response, Url, Version};
 use anyhow::{Error, Ok, Result};
 
-use crate::cache::Cacher;
+//use crate::cache::Cacher;
 use crate::downloader::httprequest::RequestInfo;
 
 

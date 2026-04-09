@@ -6,7 +6,9 @@ use std::ops::Deref;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::family::{AtomicCell, Lockable, Mutex, RefCounted, RefCounter, ThreadModel};
+//use crate::downloader::family::AtomicSwapable;
+
+use super::family::{AtomicCell, Lockable, Mutex, RefCounted, RefCounter, ThreadModel, AtomicSwapable, AsMutUnsafe};
 use radium::Radium;
 
 //
@@ -24,46 +26,14 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> DownloadGroup<'a, F, E> {
     }
 }
 
-///groupWriteGuard
-struct GroupGuard<'a, F: ThreadModel, E: GroupExt<F>> {
-    group: &'a DownloadGroup<'a, F, E>,
-    guard: <F::Mutex<InLockShare<'a, F, E>> as Lockable>::Guard<'a>, //impl DerefMut<Target = InLockShare>
-}
-
-impl<'a, F: ThreadModel, E: GroupExt<F>> GroupGuard<'a, F, E> {
-    ///move to lockedgroup
-    fn new_reporter(
-        &'a mut self,
-        ext: E::SlotExt<'a>,
-        ext_share: E::SlotShareExt<'a>,
-    ) -> Reporter<F, E> {
-        let (share1, share2) = SlotShare::<F, E>::new_pair(self.guard.slots.len(), ext_share);
-        self.guard.push(Slot::with_raw(share1, ext));
-        Reporter {
-            share: self.group.share.clone(),
-            slot_share: share2,
-        }
-    }
-
-    fn slots(&mut self) -> &mut Vec<Slot<'a, F, E>> {
-        &mut self.guard.slots
-    }
-
-    fn inlock_ext(&mut self) -> &mut E::InLockShareExt<'a> {
-        &mut self.guard.ext
-    }
-}
-
 ///专为下载任务特化的任务管理器，运行时无关
 struct GroupShare<'a, F: ThreadModel, E: GroupExt<F>> {
     locked: F::Mutex<InLockShare<'a, F, E>>,
-    pub alive_slot_len: F::AtomicCell<usize>, //Maybe?
     pub ext: E::GroupShareExt<'a>,
 }
 
-impl<'a, F: ThreadModel, E: GroupExt<F>> GroupShare<'a, F, E> {}
 struct InLockShare<'a, F: ThreadModel, E: GroupExt<F>> {
-    slots: Vec<Slot<'a, F, E>>,
+    pub slots: Vec<Slot<'a, F, E>>, // or Box<[Slot]>?
     pub ext: E::InLockShareExt<'a>,
 }
 
@@ -115,7 +85,6 @@ struct Slot<'a, F: ThreadModel, E: GroupExt<F>> {
 }
 
 impl<'a, F: ThreadModel, E: GroupExt<F>> Slot<'a, F, E> {
-
     fn with_raw(share: RefCounter<F, SlotShare<'a, F, E>>, ext: E::SlotExt<'a>) -> Self {
         Self { share, ext }
     }
@@ -149,7 +118,7 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> SlotShare<'a, F, E> {
 
 ///每个下载分块向下载组报告状态的结构体
 struct Reporter<'a, F: ThreadModel, E: GroupExt<F>> {
-    share: F::RefCounter<GroupShare<'a, F, E>>,     //must priv, cant get &mut self.share
+    share: F::RefCounter<GroupShare<'a, F, E>>, //must priv, cant get &mut self.share
     slot_share: F::RefCounter<SlotShare<'a, F, E>>, //must priv
 }
 
@@ -171,40 +140,6 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> Reporter<'a, F, E> {
     }
 }
 
-///reporter WriteGuard
-struct ReporterGuard<'a, F: ThreadModel, E: GroupExt<F>> {
-    view: &'a Reporter<'a, F, E>,
-    guard: <F::Mutex<InLockShare<'a, F, E>> as Lockable>::Guard<'a>,
-}
-
-impl<'a, F: ThreadModel, E: GroupExt<F>> ReporterGuard<'a, F, E> {
-    
-    fn slots(&mut self) -> &mut Vec<Slot<'a, F, E>> {
-        &mut self.guard.slots
-    }
-
-    fn inlock_ext(&mut self) -> &mut E::InLockShareExt<'a> {
-        &mut self.guard.ext
-    }
-
-    fn my_index(&mut self) -> &mut usize {
-        //Safety: 我们有guard，逻辑上拥有index字段的所有权
-        unsafe { &mut *self.view.slot_share.index.0.get() }
-    }
-
-    fn remove_me(&mut self) {
-        let index = *self.my_index();
-        let removed = self.guard.remove(index);
-    }
-    //
-    // fn remove_me(&mut self) {
-    //     //Safty: 我们确保了参数是内部元素
-    //     unsafe {
-    //         self.guard.remove_slot(&self.view.slot_share);
-    //     }
-    // }
-}
-
 trait ProcessRecordKind {
     type State;
     type Downloaded<T>: Radium<Item = T>;
@@ -215,7 +150,6 @@ trait ProcessRecordKind {
 
 ///静态标记空结构体
 trait GroupExt<F: ThreadModel>: 'static {
-    
     type GroupShareExt<'a>;
     type InLockShareExt<'a>;
     type SlotShareExt<'a>: Default; //Default用于预先分配
@@ -240,6 +174,71 @@ impl<T> From<T> for SyncUnsafeCell<T> {
     fn from(value: T) -> Self {
         Self(value.into())
     }
+}
+
+//--------------------------LockedGuards---------------------------
+
+///groupWriteGuard
+struct GroupGuard<'a, F: ThreadModel, E: GroupExt<F>> {
+    group: &'a DownloadGroup<'a, F, E>,
+    guard: <F::Mutex<InLockShare<'a, F, E>> as Lockable>::Guard<'a>, //impl DerefMut<Target = InLockShare>
+}
+
+impl<'a, F: ThreadModel, E: GroupExt<F>> GroupGuard<'a, F, E> {
+    ///move to lockedgroup
+    fn new_reporter(
+        &'a mut self,
+        ext: E::SlotExt<'a>,
+        ext_share: E::SlotShareExt<'a>,
+    ) -> Reporter<F, E> {
+        let (share1, share2) = SlotShare::<F, E>::new_pair(self.guard.slots.len(), ext_share);
+        self.guard.push(Slot::with_raw(share1, ext));
+        Reporter {
+            share: self.group.share.clone(),
+            slot_share: share2,
+        }
+    }
+
+    fn slots(&mut self) -> &mut Vec<Slot<'a, F, E>> {
+        &mut self.guard.slots
+    }
+
+    fn inlock_ext(&mut self) -> &mut E::InLockShareExt<'a> {
+        &mut self.guard.ext
+    }
+}
+
+///reporter WriteGuard
+struct ReporterGuard<'a, F: ThreadModel, E: GroupExt<F>> {
+    view: &'a Reporter<'a, F, E>,
+    guard: <F::Mutex<InLockShare<'a, F, E>> as Lockable>::Guard<'a>,
+}
+
+impl<'a, F: ThreadModel, E: GroupExt<F>> ReporterGuard<'a, F, E> {
+    fn slots(&mut self) -> &mut Vec<Slot<'a, F, E>> {
+        &mut self.guard.slots
+    }
+
+    fn inlock_ext(&mut self) -> &mut E::InLockShareExt<'a> {
+        &mut self.guard.ext
+    }
+
+    fn my_index(&mut self) -> &mut usize {
+        //Safety: 我们有guard，逻辑上拥有index字段的所有权
+        unsafe { &mut *self.view.slot_share.index.0.get() }
+    }
+
+    fn remove_me(&mut self) {
+        let index = *self.my_index();
+        let removed = self.guard.remove(index);
+    }
+    //
+    // fn remove_me(&mut self) {
+    //     //Safty: 我们确保了参数是内部元素
+    //     unsafe {
+    //         self.guard.remove_slot(&self.view.slot_share);
+    //     }
+    // }
 }
 
 // struct LazyDropVec<F: ThreadModel, T> {
@@ -324,7 +323,7 @@ impl<T> From<T> for SyncUnsafeCell<T> {
 //     }
 
 //     核心：实现类似 Stream 的 poll_next 逻辑
-    
+
 //     TODO: 移动到专用的异步包装器上
 //     pub fn poll_wait_all(&self, cx: &mut Context<'_>) -> Poll<()> {
 //         todo!("move this method to GroupShare");
