@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 //use crate::downloader::family::AtomicSwapable;
 
-use super::family::{AtomicCell, Lockable, Mutex, RefCounted, RefCounter, ThreadModel, AtomicSwapable, AsMutUnsafe};
+use super::family::{AtomicCell, Lockable, Mutex, RefCounted, RefCounter, ThreadModel};
 use radium::Radium;
 
 //
@@ -38,6 +38,13 @@ struct InLockShare<'a, F: ThreadModel, E: GroupExt<F>> {
 }
 
 impl<'a, F: ThreadModel, E: GroupExt<F>> InLockShare<'a, F, E> {
+
+    fn clone_view(&self) -> Box<[Slot<'a, F, E>]>
+    where Slot<'a, F, E>: Clone
+    {
+        self.slots.clone().into_boxed_slice()
+    }
+
     fn swap(&mut self, a: usize, b: usize) {
         self.slots.swap(a, b);
         unsafe {
@@ -79,6 +86,7 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> InLockShare<'a, F, E> {
 }
 
 /// 内部存储项
+#[derive(Clone)]
 struct Slot<'a, F: ThreadModel, E: GroupExt<F>> {
     share: RefCounter<F, SlotShare<'a, F, E>>,
     pub ext: E::SlotExt<'a>,
@@ -117,7 +125,7 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> SlotShare<'a, F, E> {
 }
 
 ///每个下载分块向下载组报告状态的结构体
-struct Reporter<'a, F: ThreadModel, E: GroupExt<F>> {
+pub struct Reporter<'a, F: ThreadModel, E: GroupExt<F>> {
     share: F::RefCounter<GroupShare<'a, F, E>>, //must priv, cant get &mut self.share
     slot_share: F::RefCounter<SlotShare<'a, F, E>>, //must priv
 }
@@ -149,11 +157,11 @@ trait ProcessRecordKind {
 }
 
 ///静态标记空结构体
-trait GroupExt<F: ThreadModel>: 'static {
+pub trait GroupExt<F: ThreadModel>: 'static {
     type GroupShareExt<'a>;
     type InLockShareExt<'a>;
-    type SlotShareExt<'a>: Default; //Default用于预先分配
-    type SlotExt<'a>: Default;
+    type SlotShareExt<'a>;
+    type SlotExt<'a>;
 
     //type Element<'a>: From<ExtTurple<'a, F, Self>> + Into<ExtTurple<'a, F, Self>>;
 }
@@ -165,32 +173,23 @@ struct ExtHander<'a, E: GroupExt<F>, F: ThreadModel> {
     slot_share: &'a E::SlotShareExt<'a>,
 }
 
-///tools
-struct SyncUnsafeCell<T>(UnsafeCell<T>);
 
-unsafe impl<T: Sync> Sync for SyncUnsafeCell<T> {}
-
-impl<T> From<T> for SyncUnsafeCell<T> {
-    fn from(value: T) -> Self {
-        Self(value.into())
-    }
-}
 
 //--------------------------LockedGuards---------------------------
 
 ///groupWriteGuard
-struct GroupGuard<'a, F: ThreadModel, E: GroupExt<F>> {
+pub struct GroupGuard<'a, F: ThreadModel, E: GroupExt<F>> {
     group: &'a DownloadGroup<'a, F, E>,
     guard: <F::Mutex<InLockShare<'a, F, E>> as Lockable>::Guard<'a>, //impl DerefMut<Target = InLockShare>
 }
 
 impl<'a, F: ThreadModel, E: GroupExt<F>> GroupGuard<'a, F, E> {
     ///move to lockedgroup
-    fn new_reporter(
+    pub fn new_reporter(
         &'a mut self,
         ext: E::SlotExt<'a>,
         ext_share: E::SlotShareExt<'a>,
-    ) -> Reporter<F, E> {
+    ) -> Reporter<'a, F, E> {
         let (share1, share2) = SlotShare::<F, E>::new_pair(self.guard.slots.len(), ext_share);
         self.guard.push(Slot::with_raw(share1, ext));
         Reporter {
@@ -199,17 +198,17 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> GroupGuard<'a, F, E> {
         }
     }
 
-    fn slots(&mut self) -> &mut Vec<Slot<'a, F, E>> {
+    pub fn slots(&mut self) -> &mut Vec<Slot<'a, F, E>> {
         &mut self.guard.slots
     }
 
-    fn inlock_ext(&mut self) -> &mut E::InLockShareExt<'a> {
+    pub fn inlock_ext(&mut self) -> &mut E::InLockShareExt<'a> {
         &mut self.guard.ext
     }
 }
 
 ///reporter WriteGuard
-struct ReporterGuard<'a, F: ThreadModel, E: GroupExt<F>> {
+pub struct ReporterGuard<'a, F: ThreadModel, E: GroupExt<F>> {
     view: &'a Reporter<'a, F, E>,
     guard: <F::Mutex<InLockShare<'a, F, E>> as Lockable>::Guard<'a>,
 }
@@ -239,6 +238,17 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> ReporterGuard<'a, F, E> {
     //         self.guard.remove_slot(&self.view.slot_share);
     //     }
     // }
+}
+
+///tools
+struct SyncUnsafeCell<T>(UnsafeCell<T>);
+
+unsafe impl<T: Sync> Sync for SyncUnsafeCell<T> {}
+
+impl<T> From<T> for SyncUnsafeCell<T> {
+    fn from(value: T) -> Self {
+        Self(value.into())
+    }
 }
 
 // struct LazyDropVec<F: ThreadModel, T> {
