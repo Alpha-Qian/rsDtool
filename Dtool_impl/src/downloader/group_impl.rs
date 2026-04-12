@@ -184,3 +184,8 @@ impl<'a, F: ThreadModel> AsyncGroupGuard<'a, F> {
 // trait Wake{
 //     fn wake(self);
 // }
+
+enum DownloadType {
+    MutiPart,
+    SingePArt,
+}

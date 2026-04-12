@@ -105,3 +105,15 @@ impl<T> Lockable for RefCell<T> {
         self.borrow_mut()
     }
 }
+
+// struct UnsafeMutex<T>(UnsafeCell<T>);
+
+// impl Lockable for UnsafeMutex<T> {
+//     fn lock(&self) -> Self::Guard<'_> {
+        
+//     }
+// }
+
+// struct UnsafeGuard{
+
+// }
