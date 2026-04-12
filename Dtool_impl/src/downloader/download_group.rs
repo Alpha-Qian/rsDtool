@@ -12,32 +12,55 @@ use super::family::{AtomicCell, Lockable, Mutex, RefCounted, RefCounter, ThreadM
 use radium::Radium;
 
 //
-pub struct DownloadGroup<'data, F: ThreadModel, E: GroupExt<F>> {
-    pub share: F::RefCounter<GroupShare<'data, F, E>>, //different from state reporter, this field can be pub
+pub struct DownloadGroup<'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    pub share: F::RefCounter<GroupShared<'data, F, E>>, //different from state reporter, this field can be pub
 }
 
-impl<'data, F: ThreadModel, E: GroupExt<F>> DownloadGroup<'data, F, E> {
+impl<'data, F, E> DownloadGroup<'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
     pub fn lock<'a>(&'a self) -> GroupGuard<'a, 'data, F, E> {
-        let g = self.share.locked.lock();
-        GroupGuard {
-            group: self,
-            guard: g,
-        }
+        let guard = self.share.locked.lock();
+        unsafe { GroupGuard::from_raw(&self.share, guard) }
     }
 }
 
 ///专为下载任务特化的任务管理器，运行时无关
-struct GroupShare<'a, F: ThreadModel, E: GroupExt<F>> {
-    locked: F::Mutex<InLockShare<'a, F, E>>,
+struct GroupShared<'a, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    locked: F::Mutex<InLockShared<'a, F, E>>,
     pub ext: E::GroupShareExt<'a>,
 }
 
-struct InLockShare<'a, F: ThreadModel, E: GroupExt<F>> {
+type RefGroupShared<'data, F: ThreadModel, E: GroupExt<F>> =
+    F::RefCounter<GroupShared<'data, F, E>>;
+
+struct InLockShared<'a, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
     pub slots: Vec<Slot<'a, F, E>>, // or Box<[Slot]>?
     pub ext: E::InLockShareExt<'a>,
 }
 
-impl<'a, F: ThreadModel, E: GroupExt<F>> InLockShare<'a, F, E> {
+pub type InLockSharedGuard<'a, 'data, F: ThreadModel, E: GroupExt<F>> =
+    <F::Mutex<InLockShared<'data, F, E>> as Lockable>::Guard<'a>;
+
+impl<'a, F, E> InLockShared<'a, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
     fn clone_view(&self) -> Box<[Slot<'a, F, E>]>
     where
         Slot<'a, F, E>: Clone,
@@ -87,12 +110,20 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> InLockShare<'a, F, E> {
 
 /// 内部存储项
 #[derive(Clone)]
-pub(crate) struct Slot<'a, F: ThreadModel, E: GroupExt<F>> {
+pub(crate) struct Slot<'a, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
     share: RefCounter<F, SlotShare<'a, F, E>>,
     pub ext: E::SlotExt<'a>,
 }
 
-impl<'a, F: ThreadModel, E: GroupExt<F>> Slot<'a, F, E> {
+impl<'a, F, E> Slot<'a, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
     fn with_raw(share: RefCounter<F, SlotShare<'a, F, E>>, ext: E::SlotExt<'a>) -> Self {
         Self { share, ext }
     }
@@ -102,19 +133,28 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> Slot<'a, F, E> {
     }
 }
 
-struct SlotShare<'a, F: ThreadModel, E: GroupExt<F>> {
+struct SlotShare<'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
     // 指向自己当前索引的共享引用
     index: SyncUnsafeCell<usize>,
-    pub ext: E::SlotShareExt<'a>,
+    pub ext: E::SlotShareExt<'data>,
 }
+type RefSlotShare<'data, F: ThreadModel, E: GroupExt<F>> = F::RefCounter<SlotShare<'data, F, E>>;
 
-impl<'a, F: ThreadModel, E: GroupExt<F>> SlotShare<'a, F, E> {
+impl<'data, F, E> SlotShare<'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
     fn new_pair(
         index: usize,
-        ext: E::SlotShareExt<'a>,
+        ext: E::SlotShareExt<'data>,
     ) -> (
-        F::RefCounter<SlotShare<'a, F, E>>,
-        F::RefCounter<SlotShare<'a, F, E>>,
+        F::RefCounter<SlotShare<'data, F, E>>,
+        F::RefCounter<SlotShare<'data, F, E>>,
     ) {
         let share: F::RefCounter<Self> = F::RefCounter::new(SlotShare {
             index: index.into(),
@@ -127,13 +167,23 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> SlotShare<'a, F, E> {
 //-----------------------------------------------------
 
 ///每个下载分块向下载组报告状态的结构体
-pub struct Reporter<'data, F: ThreadModel, E: GroupExt<F>> {
-    share: F::RefCounter<GroupShare<'data, F, E>>, //leak &mut of this field will cause UB
-    slot_share: F::RefCounter<SlotShare<'data, F, E>>, //leak &mut of this field will cause UB
+pub struct Reporter<'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    //leak &mut of this field will cause UB
+    share: F::RefCounter<GroupShared<'data, F, E>>,
+    //leak &mut of this field will cause UB
+    slot_share: F::RefCounter<SlotShare<'data, F, E>>,
 }
 
-impl<'data, F: ThreadModel, E: GroupExt<F>> Reporter<'data, F, E> {
-    pub fn share(&self) -> &GroupShare<'data, F, E> {
+impl<'data, F, E> Reporter<'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    pub fn share(&self) -> &GroupShared<'data, F, E> {
         //only read
         &*self.share
     }
@@ -143,69 +193,88 @@ impl<'data, F: ThreadModel, E: GroupExt<F>> Reporter<'data, F, E> {
         &self.slot_share
     }
 
-    pub fn lock(&self) -> ReporterGuard<'_, 'data, F, E> {
-        let guard = self.share.locked.lock();
-        //guard
-        ReporterGuard { view: self, guard }
+    pub fn lock<'a>(&'a self) -> ReporterGuard<'a, 'data, F, E> {
+        let group_guard = GroupGuard::lock_to_new(&self.share);
+        unsafe { ReporterGuard::from_raw(group_guard, &self.slot_share) }
     }
-}
-
-trait ProcessRecordKind {
-    type State;
-    type Downloaded<T>: Radium<Item = T>;
-    type Writed<T>: Radium<Item = T>;
-
-    fn report_downloaded_len(len: u64);
-}
-
-type ExtElement<'a, F, E: GroupExt<F>> = (E::SlotExt<'a>, E::SlotShareExt<'a>);
-
-struct ExtHander<'a, E: GroupExt<F>, F: ThreadModel> {
-    group_share: &'a E::GroupShareExt<'a>, //leak &mut of this field will cause UB
-    slot_share: &'a E::SlotShareExt<'a>,   //leak &mut of this field will cause UB
 }
 
 //--------------------------LockedGuards---------------------------
 
 ///groupWriteGuard
-pub struct GroupGuard<'a, 'data, F: ThreadModel, E: GroupExt<F>> {
+pub struct GroupGuard<'a, 'data, F, E>
+where
+    'data: 'a,
+    <F as ThreadModel>::Mutex<InLockShared<'data, F, E>>: 'a, // 满足 Lockable Trait 的 GAT 约束
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
     //leak &mut of this field will cause UB
-    group: &'a mut DownloadGroup<'data, F, E>, //改为& RefCell<GroupShare<'data, F, E>>
+    share: &'a F::RefCounter<GroupShared<'data, F, E>>,
     //leak &mut of this field will cause UB
-    guard: <F::Mutex<InLockShare<'data, F, E>> as Lockable>::Guard<'a>,
+    guard: InLockSharedGuard<'a, 'data, F, E>, //<F::Mutex<InLockShare<'data, F, E>> as Lockable>::Guard<'a>,
 }
 
-impl<'a, 'data, F: ThreadModel, E: GroupExt<F>> GroupGuard<'a, 'data, F, E> {
+impl<'a, 'data, F, E> GroupGuard<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    pub unsafe fn from_raw(
+        share: &'a F::RefCounter<GroupShared<'data, F, E>>,
+        guard: InLockSharedGuard<'a, 'data, F, E>,
+    ) -> Self {
+        Self { share, guard }
+    }
+
+    pub fn lock_to_new(share: &'a F::RefCounter<GroupShared<'data, F, E>>) -> Self {
+        let guard = share.locked.lock();
+        Self { share, guard }
+    }
+
     ///move to lockedgroup
     pub fn new_reporter(
         &mut self,
         ext: E::SlotExt<'data>,
         ext_share: E::SlotShareExt<'data>,
     ) -> Reporter<'data, F, E> {
-        let (share1, share2) = SlotShare::<F, E>::new_pair(self.guard.slots.len(), ext_share);
-        self.guard.push(Slot::with_raw(share1, ext));
+        let (slot_share1, slot_share2) =
+            SlotShare::<F, E>::new_pair(self.guard.slots.len(), ext_share);
+        self.guard.push(Slot::with_raw(slot_share1, ext));
         Reporter {
-            share: self.group.share.clone(),
-            slot_share: share2,
+            share: self.share.clone(),
+            slot_share: slot_share2,
         }
     }
 
     pub fn slots(&mut self) -> &mut Vec<Slot<'data, F, E>> {
         &mut self.guard.slots
     }
-
-    pub fn group(&'a mut self) -> &'a mut DownloadGroup<'data, F, E> {
-        self.group
-    }
 }
 
 ///reporter WriteGuard
 pub struct ReporterGuard<'a, 'data, F: ThreadModel, E: GroupExt<F>> {
-    view: &'a Reporter<'data, F, E>, //leak &mut of this field will cause UB
-    guard: <F::Mutex<InLockShare<'data, F, E>> as Lockable>::Guard<'a>, //leak &mut of this field will cause UB
+    group_guard: GroupGuard<'a, 'data, F, E>,
+
+    //leak &mut of this field will cause UB
+    slot_share: &'a F::RefCounter<SlotShare<'data, F, E>>,
 }
 
-impl<'a, 'data, F: ThreadModel, E: GroupExt<F>> ReporterGuard<'a, 'data, F, E> {
+impl<'a, 'data, F, E> ReporterGuard<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    unsafe fn from_raw(
+        group_guard: GroupGuard<'a, 'data, F, E>,
+        slot_share: &'a F::RefCounter<SlotShare<'data, F, E>>,
+    ) -> Self {
+        Self {
+            group_guard,
+            slot_share,
+        }
+    }
+
     pub fn slots(&mut self) -> &mut Vec<Slot<'data, F, E>> {
         &mut self.guard.slots
     }
@@ -216,7 +285,7 @@ impl<'a, 'data, F: ThreadModel, E: GroupExt<F>> ReporterGuard<'a, 'data, F, E> {
 
     pub fn my_index_mut(&mut self) -> &mut usize {
         //Safety: 我们有guard，逻辑上拥有index字段的所有权
-        unsafe { &mut *self.view.slot_share.index.0.get() }
+        unsafe { &mut *self.slot_share.index.0.get() }
     }
 
     pub fn remove_me(&mut self) {
@@ -225,7 +294,27 @@ impl<'a, 'data, F: ThreadModel, E: GroupExt<F>> ReporterGuard<'a, 'data, F, E> {
     }
 }
 
-///-----------------------------静态标记空结构体-----------------------------------------
+impl<'a, 'data, F, E> Deref for ReporterGuard<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    type Target = GroupGuard<'a, 'data, F, E>;
+    fn deref(&self) -> &Self::Target {
+        &self.group_guard
+    }
+}
+
+impl<'a, 'data, F, E> DerefMut for ReporterGuard<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.group_guard
+    }
+}
+
 pub trait GroupExt<F: ThreadModel>: 'static {
     type GroupShareExt<'a>;
     type InLockShareExt<'a>;
@@ -234,7 +323,7 @@ pub trait GroupExt<F: ThreadModel>: 'static {
 }
 
 ///
-impl<'a, F, E> Deref for GroupShare<'a, F, E>
+impl<'a, F, E> Deref for GroupShared<'a, F, E>
 where
     F: ThreadModel,
     E: GroupExt<F>,
@@ -244,7 +333,7 @@ where
         &self.ext
     }
 }
-impl<'a, F, E> DerefMut for GroupShare<'a, F, E>
+impl<'a, F, E> DerefMut for GroupShared<'a, F, E>
 where
     F: ThreadModel,
     E: GroupExt<F>,
@@ -254,7 +343,7 @@ where
     }
 }
 ///
-impl<'a, F, E> Deref for InLockShare<'a, F, E>
+impl<'a, F, E> Deref for InLockShared<'a, F, E>
 where
     F: ThreadModel,
     E: GroupExt<F>,
@@ -265,7 +354,7 @@ where
     }
 }
 
-impl<'a, F, E> DerefMut for InLockShare<'a, F, E>
+impl<'a, F, E> DerefMut for InLockShared<'a, F, E>
 where
     F: ThreadModel,
     E: GroupExt<F>,
@@ -315,6 +404,21 @@ where
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.ext
     }
+}
+///还不知道具体怎么用
+trait ProcessRecordKind {
+    type State;
+    type Downloaded<T>: Radium<Item = T>;
+    type Writed<T>: Radium<Item = T>;
+
+    fn report_downloaded_len(len: u64);
+}
+
+type ExtElement<'a, F, E: GroupExt<F>> = (E::SlotExt<'a>, E::SlotShareExt<'a>);
+
+struct ExtHander<'a, E: GroupExt<F>, F: ThreadModel> {
+    group_share: &'a E::GroupShareExt<'a>, //leak &mut of this field will cause UB
+    slot_share: &'a E::SlotShareExt<'a>,   //leak &mut of this field will cause UB
 }
 
 ///标准库SyncUnsafeCell还未稳定
