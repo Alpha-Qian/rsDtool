@@ -26,6 +26,8 @@ pub trait ThreadModel: 'static {
 
 pub trait RefCounted: Deref + Clone {
     fn new(v: Self::Target) -> Self;
+
+    
 }
 
 pub trait Lockable {

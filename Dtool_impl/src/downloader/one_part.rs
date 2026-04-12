@@ -1,12 +1,16 @@
+//!探测目标链接是否支持续传
+
 use std::{cell::{Cell, UnsafeCell}, sync::{Arc, atomic::AtomicU64}};
 
 use radium::Radium;
-use crate::downloader::{ httprequest::RequestInfo};
+use crate::downloader::{ download_group::{GroupExt, Slot}, httprequest::RequestInfo};
 use super::family::{ThreadModel, ThreadLocal, ThreadSafe, Lockable, RefCounted, RefCounter, Mutex, AtomicCell};
 
 
-struct Download<F: ThreadModel>{
-    info: RequestInfo,
-    length: u64,
-    progress: F::AtomicCell<u64>
+
+struct TestUrl<'a, F: ThreadModel, E: GroupExt<F>>{
+    request_info: RequestInfo,
+    slot: Slot<'a, F, E>,
 }
+
+
