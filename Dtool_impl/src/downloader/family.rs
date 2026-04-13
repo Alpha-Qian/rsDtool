@@ -14,7 +14,7 @@ use radium::{
 
 //命名参考：https://aistudio.google.com/prompts/1kdVbB3yyDukhLxzDQZ6XTWpbUyWQ1eMg
 
-pub trait ThreadModel: 'static {
+pub trait ThreadModel: 'static + Copy{
     type RefCounter<T>: RefCounted<Target = T>; //这个生命周期视乎就是默认的约束//要求SharePtr<T>必须活得和T一样久
 
     type AtomicCell<T: Atomic + PartialEq>: Radium<Item = T>

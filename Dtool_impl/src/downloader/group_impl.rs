@@ -8,6 +8,8 @@ use crate::downloader::{download_group::{DownloadGroup, GroupExt, GroupGuard, Re
 async fn clone_waker() -> Waker{
     future::poll_fn(|c| task::Poll::Ready(c.waker().clone())).await
 }
+
+#[derive(Clone, Copy)]
 struct Ext;
 impl<F: ThreadModel> GroupExt<F> for Ext {
     type GroupShareExt<'a> = GroupShareExt<F>;
@@ -25,9 +27,9 @@ struct InLockShareExt{
 struct SlotExt{end: u64}
 struct SlotShareExt<F: ThreadModel>{remain: F::RefCounter<u64>}
 
-
+///
 struct AsyncGroup<F: ThreadModel>{
-    pub raw: DownloadGroup<'static, F, Ext>,
+    group: DownloadGroup<'static, F, Ext>,
     length: u64
 }
 
@@ -42,7 +44,7 @@ impl<F: ThreadModel> AsyncGroup<F> {
     }
 
     fn lock(&self) -> AsyncGroupGuard<'_, F>{
-        AsyncGroupGuard::new(self.raw.lock())
+        AsyncGroupGuard::new(self.group.lock())
     }
     
     fn join_all(&self) {
@@ -85,107 +87,21 @@ impl<'a, F: ThreadModel> AsyncGroupGuard<'a, F> {
     }
 }
 
-
-// struct AsyncReporter<F: ThreadModel> {
-//     reporter: Reporter<'static, F, Ext>,
-//     waker: Waker
-// }
-
-// impl<F: ThreadModel> AsyncReporter<F> {
-//     fn new(reporter: Reporter<'static, F, Ext>, waker: Waker) -> Self{
-//         Self { reporter, waker }
-//     }
-
-//     fn lock(&self) -> ReporterGuard<'_, 'static, F, Ext>{
-//         self.reporter.lock()
-//     }
-
-//     fn on_exit(self) {
-//         let mut reporter: ReporterGuard<'_, 'static, F, Ext> = self.lock();
-//         reporter.remove_me();
-        
-//         if reporter.slots().is_empty() {self.reporter.share().waker.wake();}
-//     }
-// }
-
-// // impl<F: ThreadModel> Drop for AsyncReporter<F> {
-// //     fn drop(&mut self) {
-// //         let mut reporter: ReporterGuard<'_, 'static, F, Ext> = self.lock();
-// //         reporter.remove_me();
-// //         if reporter.slots().is_empty() {self.waker.wake_by_ref();}
-// //     }
-// // }
-
-
-// struct WakerExt<F, E>{
-//     a: PhantomData<F>,
-//     b: PhantomData<E>
-// }
-
-// impl<F: ThreadModel, E: GroupExt<F>> GroupExt<F> for WakerExt<F, E> {
-//     type GroupShareExt<'a> = E::GroupShareExt<'a>;
-//     type InLockShareExt<'a> = WakerWith<E::InLockShareExt<'a>>;
-//     type SlotExt<'a> = E::SlotExt<'a>;
-//     type SlotShareExt<'a> = E::SlotShareExt<'a>;
-
-
-// }
-
-// struct WakerWith<T>{
-//     waker: Option<Waker>,
-//     data: T
-// }
-
-// impl<T> WakerWith<T> {
-//     pub fn replace(&mut self, waker: Waker) -> Option<Waker>{
-//         self.waker.replace(waker)
-//     }
-
-//     pub fn take(&mut self) -> Option<Waker>{
-//         self.waker.take()
-//     }
-// }
-
-// impl<T> Deref for WakerWith<T> {
-//     type Target = T;
-//     fn deref(&self) -> &Self::Target {
-//         &self.data
-//     }
-// }
-
-// impl<T> DerefMut for WakerWith<T> {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         &mut self.data
-//     }
-// }
-
-// struct ParkExt<F, E>{
-//     a: PhantomData<F>,
-//     b: PhantomData<E>
-// }
-
-// use std::thread::Thread;
-// impl<F: ThreadModel, E: GroupExt<F>> GroupExt<F> for ParkExt<F, E> {
-//     type InLockShareExt<'b> = ;
-// }
-
-
-// struct CanWake<W, T>{
-//     waker: Option<W>,
-//     data: T
-// }
-
-// impl<W: Wake, T> CanWake<W, T> {
-//     pub fn replace_waker(&mut self, new: Option<W>) -> Option<W> {
-//         std::mem::replace(&mut self.waker, new)
-//     }
-// }
-
-// trait Wake{
-//     fn wake(self);
-// }
-
-enum DownloadType {
-    MutiPart,
-    SingePArt,
+struct DownloadWorker<'data, F: ThreadModel>{
+    reporter: Reporter<'data, F, Ext>
 }
+
+impl<'data, F: ThreadModel> DownloadWorker<'data, F> {
+    fn exit(&self) {
+        let mut guard = self.reporter.lock();
+        guard.remove_me();
+        let waker = guard.inlock_ext().waker.take();
+        //先释放再唤醒，避免竞争
+        drop(guard);
+
+        if let Some(waker) = waker{
+            waker.wake();
+        }
+    }
+}
+
