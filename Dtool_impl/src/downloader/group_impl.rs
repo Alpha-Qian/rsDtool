@@ -26,7 +26,6 @@ struct GroupShareExt<F: ThreadModel>{
 struct InLockShareExt{
     segments: Vec<Segment>,
     waker: Option<Waker>,
-    aborting: bool,
 }
 
 struct SlotExt{
@@ -98,16 +97,17 @@ impl<'a, F: ThreadModel> AsyncGroupGuard<'a, F> {
     }
 
     fn abort_all(&mut self) {
-        self.guard.in_lock_ext_mut().aborting = true;
-        for i in self.guard.slots(){
+        let slots = self.guard.slots_optional();
+        
+        for i in self.guard.slots().unwrap(){
             i.share().abort.abort();
         }
+        self.guard.slots_mut()
     }
 
     async fn shutdown(&mut self) {
         self.abort_all();
         self.join_all().await;
-        self.guard.in_lock_ext_mut().aborting = false
     }
 
     

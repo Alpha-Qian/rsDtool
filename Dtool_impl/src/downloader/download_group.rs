@@ -31,8 +31,8 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    pub fn new(share_ext: E::GroupShareExt<'data>, inlock_ext: E::InLockShareExt<'data>) {
-        Self::from_raw(GroupShared{})
+    pub fn new(share_ext: E::GroupShareExt<'data>, inlock_ext: E::InLockShareExt<'data>) -> Self{
+        Self::from_raw(F::RefCounter::new(GroupShared::new(share_ext, inlock_ext)))
     }
     pub(crate) fn from_raw(inner: F::RefCounter<GroupShared<'data, F, E>>) -> Self {
         Self { inner }
@@ -132,15 +132,17 @@ where
         &mut self,
         ext: E::SlotExt<'data>,
         ext_share: E::SlotShareExt<'data>,
-    ) -> Reporter<'data, F, E> {
+    ) -> Option<Reporter<'data, F, E>> {
+        let mut slots = self.slots_mut()?;
+
         let (slot_share1, slot_share2) =
-            SlotShare::<F, E>::new_pair(self.guard.slots.len(), ext_share);
+            SlotShare::<F, E>::new_pair(slots.len(), ext_share);
         let slot = Slot::with_raw(slot_share1, ext);
 
         //安全性：Slot来源于group内部
-        unsafe{ self.guard.slots.push(slot);}
+        unsafe{ slots.push(slot);}
         //安全性：slot_share来源于group内部
-        unsafe { Reporter::from_raw(self.group.clone(), slot_share2) }
+        unsafe { Reporter::from_raw(self.group.clone(), slot_share2) }.into()
     }
 
     pub fn in_lock_ext(&self) -> &E::InLockShareExt<'data> {
@@ -151,16 +153,17 @@ where
         &mut self.guard.ext
     }
 
-    pub fn slots(&self) -> &Vec<Slot<'data, F, E>> {
-        &self.guard.slots
+    pub fn slots(&self) -> Option<&Vec<Slot<'data, F, E>>> {
+        self.guard.slots.as_ref()
     }
 
-    pub fn slots_mut(&mut self) -> SlotVectorMut<'_, 'data, F, E> {
-        SlotVectorMut(&mut self.guard.slots)
+    pub fn slots_mut(&mut self) -> Option<SlotVectorMut<'_, 'data, F, E>> {
+        //self.guard.slots.as_mut().map(SlotVectorMut)
+        self.slots_optional().take()
     }
 
-    pub(crate) fn swap_remove(&mut self, index: usize) -> Slot<'data, F, E> {
-        self.slots_mut().swap_remove(index)
+    pub fn slots_optional(&mut self) -> OptionalSlotVecMut<'_, 'data, F, E> {
+        OptionalSlotVecMut(&mut self.guard.slots)
     }
 }
 
@@ -193,7 +196,7 @@ where
         &mut self,
         ext: E::SlotExt<'data>,
         ext_share: E::SlotShareExt<'data>,
-    ) -> Reporter<'data, F, E> {
+    ) -> Option<Reporter<'data, F, E>> {
         self.group_guard.new_reporter(ext, ext_share)
     }
 
@@ -204,11 +207,11 @@ where
         self.group_guard.in_lock_ext_mut()
     }
 
-    pub(crate) fn slots(&self) -> &Vec<Slot<'data, F, E>> {
+    pub(crate) fn slots(&self) -> Option<&Vec<Slot<'data, F, E>>> {
         self.group_guard.slots()
     }
 
-    fn slots_mut<'tmp>(&'tmp mut self) -> SlotVectorMut<'tmp, 'data, F, E> {
+    fn slots_mut<'tmp>(&'tmp mut self) -> Option<SlotVectorMut<'tmp, 'data, F, E>> {
         self.group_guard.slots_mut()
     }
     //-------------------------独有方法----------------------------------
@@ -223,13 +226,14 @@ where
 
     pub fn remove_me(&mut self) -> Slot<'data, F, E> {
         let index = *self.my_index_mut();
-        let mut slot = self.group_guard.guard.slots_mut();
+        let slot = self.group_guard.guard.slots_mut().unwrap();
         slot.swap_remove_and_update_index(index)
     }
 
     fn get_my_slot(&mut self) -> SlotMut<'_, 'data, F, E> {
         let index = *self.my_index_mut();
         self.slots_mut()
+            .unwrap()
             .into_slot_slice_mut()
             .into_element_mut(index)
             .unwrap()
@@ -237,6 +241,37 @@ where
 }
 
 //---------------------------------封装的公开api-------------------
+struct OptionalSlotVecMut<'a, 'data, F, E>(&'a mut Option<Vec<Slot<'data, F, E>>>) where F: ThreadModel, E: GroupExt<F>;
+
+impl<'a, 'data, F, E> OptionalSlotVecMut<'a, 'data, F, E> 
+where F: ThreadModel, E: GroupExt<F>
+{
+    fn take(self) -> Option<SlotVectorMut<'a, 'data, F, E>>{
+        match self.0 {
+            Some(r) => SlotVectorMut(r).into(),
+            None => None
+        }
+    }
+
+    fn set_none(self) {
+        *self.0 = None
+    }
+
+    fn set_empty(self) {
+        *self.0 = Some(Vec::new())
+    }
+
+    unsafe fn into_mut(self) -> &'a mut Option<Vec<Slot<'data, F, E>>>{
+        self.0
+    }
+
+    fn and_then(self, f: impl FnOnce(Option<SlotVectorMut<'a, 'data,F, E>>) -> Option<SlotVectorMut<'a, 'data,F, E>>) -> Self {
+        let p = f(self.take()).map(|p| unsafe {
+            p.into_mut()
+        });
+        Self(p)
+    }
+}
 
 struct SlotVectorMut<'a, 'data, F: ThreadModel, E: GroupExt<F>>(&'a mut Vec<Slot<'data, F, E>>);
 
@@ -555,12 +590,12 @@ where
         self.slots = None;
     }
     
-    fn slots(&self) -> &Vec<Slot<'a, F, E>> {
-        &self.slots
+    fn slots(&self) -> Option<&Vec<Slot<'a, F, E>>> {
+        self.slots.as_ref()
     }
 
-    fn slots_mut(&mut self) -> SlotVectorMut<'_, 'a, F, E> {
-        SlotVectorMut(&mut self.slots)
+    fn slots_mut(&mut self) -> Option<SlotVectorMut<'_, 'a, F, E>> {
+        self.slots.as_mut().map(SlotVectorMut)
     }
 }
 
