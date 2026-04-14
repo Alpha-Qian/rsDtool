@@ -2,8 +2,9 @@ use std::{future, marker::PhantomData, ops::{Deref, DerefMut}, task::{self, Poll
 use std::future::poll_fn;
 use std::task::Poll::{Ready, Pending};
 use futures::task::AtomicWaker;
+use tokio::task::AbortHandle;
 
-use crate::downloader::{download_group::{DownloadGroup, GroupExt, GroupGuard, Reporter, ReporterGuard}, family::{RefCounted, ThreadModel}, segment::Segment};
+use crate::downloader::{download_group::{DownloadGroup, GroupExt, GroupGuard, Reporter, ReporterGuard}, family::{RefCounted, ThreadModel}, httprequest::RequestInfo, segment::Segment};
 
 async fn clone_waker() -> Waker{
     future::poll_fn(|c| task::Poll::Ready(c.waker().clone())).await
@@ -18,14 +19,24 @@ impl<F: ThreadModel> GroupExt<F> for Ext {
     type SlotShareExt<'a> = SlotShareExt<F>;//remain
 }
 
-struct GroupShareExt<F: ThreadModel>{process: F::AtomicCell<u64>}
+struct GroupShareExt<F: ThreadModel>{
+    info: RequestInfo,
+    process: F::AtomicCell<u64>
+}
 struct InLockShareExt{
     segments: Vec<Segment>,
-    waker: Option<Waker>
+    waker: Option<Waker>,
+    aborting: bool,
 }
 
-struct SlotExt{end: u64}
-struct SlotShareExt<F: ThreadModel>{remain: F::RefCounter<u64>}
+struct SlotExt{
+    end: u64
+}
+
+struct SlotShareExt<F: ThreadModel>{
+    remain: F::RefCounter<u64>,
+    abort: AbortHandle,
+}
 
 ///
 struct AsyncGroup<F: ThreadModel>{
@@ -63,28 +74,43 @@ impl<'a, F: ThreadModel> AsyncGroupGuard<'a, F> {
         Self{guard}
     }
 
-    async fn new_reporter(&mut self) -> AsyncReporter<F>{
+    async fn new_reporter(&mut self) -> Option<AsyncReporter<F>>{
+        if self.guard.in_lock_ext().aborting{ return None;}
         let waker = clone_waker().await;
         let a = self.guard.new_reporter(0, <F::RefCounter<u64> as RefCounted>::new(0));
-        AsyncReporter{reporter: a, waker}
+        AsyncReporter{reporter: a, waker}.into()
     }
 
     fn join_all(&mut self) -> impl Future {
         poll_fn(|c| {
-            if self.guard.slots().is_empty() {
+            if self.guard.slots_mut().is_empty() {
                 Ready(())
             } else {
                 let a: &mut DownloadGroup<'_, F, Ext> = self.guard.group();
-                a.share.waker.register(c.waker());
+                a.inner.waker.register(c.waker());
                 Pending
             }
-
         })
     }
 
     fn set_waker(&mut self, waker: Waker) -> Waker{
         self.guard.
     }
+
+    fn abort_all(&mut self) {
+        self.guard.in_lock_ext_mut().aborting = true;
+        for i in self.guard.slots(){
+            i.share().abort.abort();
+        }
+    }
+
+    async fn shutdown(&mut self) {
+        self.abort_all();
+        self.join_all().await;
+        self.guard.in_lock_ext_mut().aborting = false
+    }
+
+    
 }
 
 struct DownloadWorker<'data, F: ThreadModel>{
@@ -104,4 +130,6 @@ impl<'data, F: ThreadModel> DownloadWorker<'data, F> {
         }
     }
 }
+
+
 

@@ -2,13 +2,15 @@
 //!
 
 use std::cell::UnsafeCell;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref, DerefMut, Index, IndexMut, RangeBounds, RangeFrom};
 
+use std::slice::SliceIndex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 //use crate::downloader::family::AtomicSwapable;
 
 use super::family::{AtomicCell, Lockable, Mutex, RefCounted, RefCounter, ThreadModel};
+use headers::Range;
 use radium::Radium;
 
 ///一个可以看作多生产者多消费者的数据结构
@@ -20,8 +22,8 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    //leak &mut of this field will cause UB
-    pub share: F::RefCounter<GroupShared<'data, F, E>>, //different from state reporter, this field can be pub
+    //leak &mut of this field is safe
+    pub inner: F::RefCounter<GroupShared<'data, F, E>>, //different from state reporter, this field can be pub
 }
 
 impl<'data, F, E> DownloadGroup<'data, F, E>
@@ -29,13 +31,20 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    pub fn from_raw(share: F::RefCounter<GroupShared<'data, F, E>>) -> Self {
-        Self { share }
+    pub fn new(share_ext: E::GroupShareExt<'data>, inlock_ext: E::InLockShareExt<'data>) {
+        Self::from_raw(GroupShared{})
+    }
+    pub(crate) fn from_raw(inner: F::RefCounter<GroupShared<'data, F, E>>) -> Self {
+        Self { inner }
     }
 
     pub fn lock<'a>(&'a self) -> GroupGuard<'a, 'data, F, E> {
-        let guard = self.share.locked.lock();
+        let guard = self.inner.locked.lock();
         unsafe { GroupGuard::from_raw(&self, guard) }
+    }
+
+    pub fn share_ext(&self) -> &E::GroupShareExt<'data> {
+        &self.inner.ext
     }
 }
 
@@ -57,16 +66,32 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    pub unsafe fn from_raw(
+    unsafe fn from_raw(
         group: DownloadGroup<'data, F, E>,
         slot_share: RefSlotShare<'data, F, E>,
     ) -> Self {
         Self { group, slot_share }
     }
 
-    pub fn slot_share(&self) -> &SlotShare<'data, F, E> {
+    pub(crate) fn slot_share(&self) -> &RefSlotShare<'data, F, E> {
         //only read
         &self.slot_share
+    }
+
+    pub(crate) fn group(&self) -> &DownloadGroup<'data, F, E> {
+        &self.group
+    }
+
+    pub(crate) fn group_share(&self) -> &GroupShared<'data, F, E> {
+        &self.group.inner
+    }
+
+    pub fn share_ext(&self) -> &E::GroupShareExt<'data> {
+        &self.group_share().ext
+    }
+
+    pub fn slot_share_ext(&self) -> &E::SlotShareExt<'data> {
+        &self.slot_share().ext
     }
 
     pub fn lock<'a>(&'a self) -> ReporterGuard<'a, 'data, F, E> {
@@ -74,18 +99,11 @@ where
         unsafe { ReporterGuard::from_raw(group_guard, &self.slot_share) }
     }
 }
-///Only read, DerefMut can cause UB
-impl<'data, F: ThreadModel, E: GroupExt<F>> Deref for Reporter<'data, F, E> {
-    type Target = DownloadGroup<'data, F, E>;
-    fn deref(&self) -> &Self::Target {
-        &self.group
-    }
-}
 
 ///groupWriteGuard
 pub struct GroupGuard<'a, 'data, F, E>
 where
-    'data: 'a,
+    //'data: 'a,
     <F as ThreadModel>::Mutex<InLockShared<'data, F, E>>: 'a, // 满足 Lockable Trait 的 GAT 约束
     F: ThreadModel,
     E: GroupExt<F>,
@@ -101,6 +119,7 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
+    ///安全性：确保guard来自group内部
     pub unsafe fn from_raw(
         group: &'a DownloadGroup<'data, F, E>,
         guard: InLockSharedGuard<'a, 'data, F, E>,
@@ -116,46 +135,34 @@ where
     ) -> Reporter<'data, F, E> {
         let (slot_share1, slot_share2) =
             SlotShare::<F, E>::new_pair(self.guard.slots.len(), ext_share);
-        self.guard.push(Slot::with_raw(slot_share1, ext));
+        let slot = Slot::with_raw(slot_share1, ext);
 
+        //安全性：Slot来源于group内部
+        unsafe{ self.guard.slots.push(slot);}
+        //安全性：slot_share来源于group内部
         unsafe { Reporter::from_raw(self.group.clone(), slot_share2) }
     }
 
-    pub fn in_lock_ext(&mut self) -> &mut E::InLockShareExt<'data> {
+    pub fn in_lock_ext(&self) -> &E::InLockShareExt<'data> {
+        &self.guard.ext
+    }
+
+    pub fn in_lock_ext_mut(&mut self) -> &mut E::InLockShareExt<'data> {
         &mut self.guard.ext
     }
 
-    pub fn slots(&mut self) -> Protect<&mut Vec<Slot<'data, F, E>>> {
-        Protect::new(&mut self.guard.slots)
+    pub fn slots(&self) -> &Vec<Slot<'data, F, E>> {
+        &self.guard.slots
     }
 
-}
+    pub fn slots_mut(&mut self) -> SlotVectorMut<'_, 'data, F, E> {
+        SlotVectorMut(&mut self.guard.slots)
+    }
 
-// impl<'a, 'data, F, E> Protect<GroupGuard<'a, 'data, F, E>
-// where
-//     F: ThreadModel,
-//     E: GroupExt<F>,
-
-impl<'a, 'data, F, E> Deref for GroupGuard<'a, 'data, F, E>
-where
-    F: ThreadModel,
-    E: GroupExt<F>,
-{
-    type Target = InLockShared<'data, F, E>;
-    fn deref(&self) -> &Self::Target {
-        &self.guard
+    pub(crate) fn swap_remove(&mut self, index: usize) -> Slot<'data, F, E> {
+        self.slots_mut().swap_remove(index)
     }
 }
-//Unsafe!!!!
-// impl<'a, 'data, F, E> DerefMut for GroupGuard<'a, 'data, F, E>
-// where
-//     F: ThreadModel,
-//     E: GroupExt<F>,
-// {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         &mut self.guard
-//     }
-// }
 
 ///reporter WriteGuard
 pub struct ReporterGuard<'a, 'data, F: ThreadModel, E: GroupExt<F>> {
@@ -180,53 +187,307 @@ where
         }
     }
 
-    pub unsafe fn slots(&mut self) -> &mut Vec<Slot<'data, F, E>> {
-        &mut self.guard.slots
+    //---------------------从GroupGuard中继承的方法：--------------
+
+    pub fn new_reporter(
+        &mut self,
+        ext: E::SlotExt<'data>,
+        ext_share: E::SlotShareExt<'data>,
+    ) -> Reporter<'data, F, E> {
+        self.group_guard.new_reporter(ext, ext_share)
     }
 
-    pub fn inlock_ext(&mut self) -> &mut E::InLockShareExt<'data> {
-        &mut self.guard.ext //实际上这里面应该有一个unsafe
+    pub fn in_lock_ext(&self) -> &E::InLockShareExt<'data> {
+        self.group_guard.in_lock_ext()
     }
+    pub fn in_lock_ext_mut(&mut self) -> &mut E::InLockShareExt<'data> {
+        self.group_guard.in_lock_ext_mut()
+    }
+
+    pub(crate) fn slots(&self) -> &Vec<Slot<'data, F, E>> {
+        self.group_guard.slots()
+    }
+
+    fn slots_mut<'tmp>(&'tmp mut self) -> SlotVectorMut<'tmp, 'data, F, E> {
+        self.group_guard.slots_mut()
+    }
+    //-------------------------独有方法----------------------------------
 
     //SAFE
-    pub fn my_index_mut(&mut self) -> &mut usize {
+    pub(crate) fn my_index_mut(&mut self) -> &mut usize {
         //Safety: 我们有guard，逻辑上拥有index字段的所有权
         unsafe { &mut *self.slot_share.index.0.get() }
     }
 
-    pub fn remove_me(&mut self) {
+    
+
+    pub fn remove_me(&mut self) -> Slot<'data, F, E> {
         let index = *self.my_index_mut();
-        let removed = self.guard.remove(index);
+        let mut slot = self.group_guard.guard.slots_mut();
+        slot.swap_remove_and_update_index(index)
     }
 
-    pub fn group_guard(&mut self) -> Protect<&mut GroupGuard<'a, 'data, F, E>>{
-        (&mut self.group_guard).into()
+    fn get_my_slot(&mut self) -> SlotMut<'_, 'data, F, E> {
+        let index = *self.my_index_mut();
+        self.slots_mut()
+            .into_slot_slice_mut()
+            .into_element_mut(index)
+            .unwrap()
     }
 }
 
-impl<'a, 'data, F, E> Deref for ReporterGuard<'a, 'data, F, E>
+//---------------------------------封装的公开api-------------------
+
+struct SlotVectorMut<'a, 'data, F: ThreadModel, E: GroupExt<F>>(&'a mut Vec<Slot<'data, F, E>>);
+
+impl<'a, 'data, F, E> SlotVectorMut<'a, 'data, F, E>
 where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    type Target = InLockSharedGuard<'a, 'data, F, E>;
-    fn deref(&self) -> &Self::Target {
-        &self.group_guard.guard
+    fn into_ref(self) -> &'a Vec<Slot<'data, F, E>> {
+        self.0
+    }
+
+    fn into_slot_slice_mut(self) -> SlotSliceMut<'a, 'data, F, E> {
+        SlotSliceMut(&mut *self.0)
+    }
+
+    fn swap_remove(&mut self, index: usize) -> Slot<'data, F, E> {
+        self.0.swap_remove(index)
+    }
+
+    fn swap_remove_and_update_index(mut self, index: usize) -> Slot<'data, F, E> {
+        let removed = self.swap_remove(index);
+
+        if index != self.len() {
+            *self.into_slot_index_mut(index) = index;
+        }
+        removed
+    }
+
+    fn into_slot_index_mut(self, index: usize) -> &'a mut usize {  //TODO: 移动到MutSliceSlot
+        self.into_slot_slice_mut().get_slot_index_mut(index)
+    }
+    
+    fn get_slot_index_ref(&self, index: usize) -> &usize {
+        get_slot_index_ref(self.0.as_slice(), index)
+    }
+
+    ///安全性：将其他来源的Slot推入列表会触发UB
+    unsafe fn push(&mut self, value: Slot<'data, F, E>) {
+        self.0.push(value);
+    }
+
+
+    ///安全性：不将&mut T指针中的内容移出
+    unsafe fn into_mut(self) -> &'a mut Vec<Slot<'data, F, E>> {
+        self.0
     }
 }
 
-// ///uNSAFE!
-// impl<'a, 'data, F, E> DerefMut for ReporterGuard<'a, 'data, F, E>
-// where
-//     F: ThreadModel,
-//     E: GroupExt<F>,
-// {
-//     fn deref_mut(&mut self) -> &mut Self::Target {
-//         &mut self.group_guard
+impl<'a, 'data, F, E> Deref for SlotVectorMut<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    type Target = Vec<Slot<'data, F, E>>;
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+struct SlotSliceMut<'a, 'data, F, E>(&'a mut [Slot<'data, F, E>])
+where
+    F: ThreadModel,
+    E: GroupExt<F>;
+
+impl<'a, 'data, F, E> SlotSliceMut<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    pub fn into_ref(self) -> &'a [Slot<'data, F, E>] {
+        self.0
+    }
+
+    pub fn into_element_mut(self, index: usize) -> Option<SlotMut<'a, 'data, F, E>> {
+        self.0.get_mut(index).map(SlotMut)
+    }
+
+    pub fn into_iter_mut(self) -> SlotsIterMut<'a, 'data, F, E> {
+        SlotsIterMut(self.0.iter_mut())
+    }
+
+    pub fn into_sub_slice_mut<R>(self, range: R) -> Self
+    where
+        R: SliceIndex<[Slot<'data, F, E>], Output = [Slot<'data, F, E>]>,
+    {
+        let a = self.0.index_mut(range);
+        Self(a)
+    }
+
+    ///从逻辑上只要拥有guard就拥有内部所有index字段的所有权
+    /// 这也是为什么往vec中添加元素是Unsafe操作
+    fn get_slot_index_mut(self, index: usize) -> &'a mut usize {  //TODO: 移动到MutSliceSlot
+        //Safety: 我们有一个独占的&mut self，
+        unsafe { &mut *self[index].get_index() }
+    }
+
+    fn get_slot_index_ref(&self, index: usize) -> &usize {
+        get_slot_index_ref(self.0, index)
+    }
+
+    fn get_mut<'tmp>(&'tmp mut self, index: usize) -> Option<SlotMut<'tmp, 'data, F, E>> {
+        self.0.get_mut(index).map(SlotMut)
+    }
+}
+
+///与get_slot_index_mut方法相同
+fn get_slot_index_ref<'data, F: ThreadModel, E: GroupExt<F>>(slice: &[Slot<'data, F, E>], index: usize) -> &'data usize {
+    //Safety: 我们有&self，保证没有其他的&mut self
+    unsafe { &*slice[index].get_index() }
+}
+
+impl<'a, 'data, F, E> Deref for SlotSliceMut<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    type Target = [Slot<'data, F, E>];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+use std::slice::IterMut;
+
+struct SlotsIterMut<'a, 'data, F, E>(IterMut<'a, Slot<'data, F, E>>)
+where
+    F: ThreadModel,
+    E: GroupExt<F>;
+
+impl<'a, 'data, F, E> Iterator for SlotsIterMut<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    type Item = SlotMut<'a, 'data, F, E>;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(SlotMut)
+    }
+}
+
+impl<'a, 'data, F, E> DoubleEndedIterator for SlotsIterMut<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.0.next_back().map(SlotMut)
+    }
+}
+impl<'a, 'data, F, E> SlotsIterMut<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    fn into_mut_slice(self) -> SlotSliceMut<'a, 'data, F, E> {
+        // 因为IterMut的as_mut_slice方法还不稳定，我们用这个方法代替
+        let slice = self.0.as_slice();
+        // 获取底层指针并转为可变指针
+        let ptr = slice.as_ptr() as *mut Slot<'data, F, E>;
+        let len = slice.len();
+
+        // 安全性：&mut self是独占的，且生命周期受当前 &mut self 限制
+        SlotSliceMut(unsafe { std::slice::from_raw_parts_mut(ptr, len) })
+    }
+
+    fn as_mut_slice(&mut self) -> SlotSliceMut<'_, 'data, F, E> {
+        // 因为IterMut的as_mut_slice方法还不稳定，我们用这个方法代替
+        let slice = self.0.as_slice();
+        // 获取底层指针并转为可变指针
+        let ptr = slice.as_ptr() as *mut Slot<'data, F, E>;
+        let len = slice.len();
+
+        // 安全性：&mut self是独占的，且生命周期受当前 &mut self 限制
+        SlotSliceMut(unsafe { std::slice::from_raw_parts_mut(ptr, len) })
+    }
+}
+
+impl<'a, 'data, F, E> Deref for SlotsIterMut<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    type Target = IterMut<'a, Slot<'data, F, E>>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+// ///泛型的迭代器
+// struct SlotIterMutGen<I>(I);
+
+// impl<I> SlotIterMutGen<I> {
+//     fn new(iter: I) -> Self {
+//         Self(iter)
 //     }
 // }
 
-///-----------------------------------------raw impl----------------
+// impl<'a, 'data, F, E, I> Iterator for SlotIterMutGen<I>
+// where
+//     'data: 'a,
+//     I: Iterator<Item = &'a mut Slot<'data, F, E>>,
+//     F: ThreadModel,
+//     E: GroupExt<F>,
+// {
+//     type Item = SlotMut<'a, 'data, F, E>;
+//     fn next(&mut self) -> Option<Self::Item> {
+//         self.0.next().map(SlotMut)
+//     }
+// }
+
+struct SlotMut<'a, 'data, F, E>(&'a mut Slot<'data, F, E>)
+where
+    F: ThreadModel,
+    E: GroupExt<F>;
+
+impl<'a, 'data, F, E> SlotMut<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    pub fn slot_ext(&self) -> &E::SlotExt<'data> {
+        &self.0.ext
+    }
+
+    pub fn slot_ext_mut(&mut self) -> &mut E::SlotExt<'data> {
+        &mut self.0.ext
+    }
+
+    pub fn slot_share_ext(&self) -> &E::SlotShareExt<'data> {
+        &self.0.share.ext
+    }
+
+    fn get_my_index(&self) -> *mut usize {
+        self.0.share.index.0.get()
+    }
+
+    pub fn as_ref<'tmp>(&'tmp self) -> &'tmp Slot<'data, F, E> {
+        self.0
+    }
+}
+
+impl<'a, 'data, F, E> From<&'a mut Slot<'data, F, E>> for SlotMut<'a, 'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    fn from(value: &'a mut Slot<'data, F, E>) -> Self {
+        Self(value)
+    }
+}
+
+//-----------------------------------------inner impl-------------------------------
 
 ///专为下载任务特化的任务管理器，运行时无关
 struct GroupShared<'a, F, E>
@@ -242,11 +503,18 @@ where
 }
 
 impl<'a, F: ThreadModel, E: GroupExt<F>> GroupShared<'a, F, E> {
-    pub fn locked(&self) -> &F::Mutex<InLockShared<'a, F, E>> {
+    fn new(share_ext: E::GroupShareExt<'a>, inlock_ext: E::InLockShareExt<'a>) -> Self{
+        let t = InLockShared{
+            slots: None,
+            ext: inlock_ext
+        };
+        Self { locked: F::Mutex::new(t), ext: share_ext }
+    }
+    fn locked(&self) -> &F::Mutex<InLockShared<'a, F, E>> {
         &self.locked
     }
 
-    pub unsafe fn locked_mut(&mut self) -> &mut F::Mutex<InLockShared<'a, F, E>> {
+    fn locked_mut(&mut self) -> &mut F::Mutex<InLockShared<'a, F, E>> {
         &mut self.locked
     }
 }
@@ -260,7 +528,8 @@ where
 {
     //leak &mut of this field will cause UB
     //leak &mut of Slot will cau
-    slots: Vec<Slot<'a, F, E>>, // or Box<[Slot]>?
+    //移出元素是安全的，但添加元素不是
+    slots: Option<Vec<Slot<'a, F, E>>>, // or Box<[Slot]>?
 
     //leak &mut of this field is Safe
     pub ext: E::InLockShareExt<'a>,
@@ -274,60 +543,27 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    fn clone_view(&self) -> Box<[Slot<'a, F, E>]>
-    where
-        Slot<'a, F, E>: Clone,
-    {
-        self.slots.clone().into_boxed_slice()
+
+    fn new(inlock_ext: E::InLockShareExt<'a>) -> Self{
+        Self{
+            slots: Some(Vec::new()),
+            ext: inlock_ext
+        }   
     }
 
-    fn swap(&mut self, a: usize, b: usize) {
-        self.slots.swap(a, b);
-        unsafe {
-            *self.slots[a].get_index() = a;
-            *self.slots[b].get_index() = b;
-        };
+    fn abort(&mut self) {
+        self.slots = None;
     }
-
-    unsafe fn remove(&mut self, index: usize) -> Slot<'a, F, E> {
-        let removed = self.slots.swap_remove(index);
-
-        if index != self.slots.len() {
-            *self.get_slot_index_mut(index) = index;
-        }
-        removed
-    }
-
-    ///从逻辑上只要拥有guard就拥有内部所有index字段的所有权
-    fn get_slot_index_mut(&mut self, index: usize) -> &mut usize {
-        //Safety: 我们有一个独占的&mut self，
-        unsafe { &mut *self.slots[index].get_index() }
-    }
-
-    fn get_slot_index_ref(&self, index: usize) -> &usize {
-        //Safety: 我们有&self，保证没有其他的&mut self
-        unsafe { &*self.slots[index].get_index() }
-    }
-
-    fn push(&mut self, value: Slot<'a, F, E>) {
-        self.slots.push(value);
-    }
-
-    ///Safety:
-    /// 确保slot_share在self内
-    pub unsafe fn remove_slot(&mut self, slot_share: &SlotShare<'_, F, E>) -> Slot<'a, F, E> {
-        let index = unsafe { *slot_share.index.0.get() };
-        self.remove(index)
-    }
-
-    pub fn slots(&self) -> &Vec<Slot<'a, F ,E>> {
+    
+    fn slots(&self) -> &Vec<Slot<'a, F, E>> {
         &self.slots
     }
 
-    pub fn slots_mut(&mut self) -> Protect<&mut Vec<Slot<'a, F ,E>>> {
-        Protect::new(&mut self.slots)
+    fn slots_mut(&mut self) -> SlotVectorMut<'_, 'a, F, E> {
+        SlotVectorMut(&mut self.slots)
     }
 }
+
 
 /// 内部存储项
 /// &mut of Self will cause UB
@@ -341,7 +577,7 @@ where
     share: RefCounter<F, SlotShare<'a, F, E>>,
 
     //leak &mut of this field is safe
-    pub ext: E::SlotExt<'a>,
+    ext: E::SlotExt<'a>,
 }
 
 impl<'a, F, E> Slot<'a, F, E>
@@ -357,7 +593,7 @@ where
         self.share.index.0.get()
     }
 
-    pub fn share(&self) -> & RefSlotShare<'a, F, E> {
+    pub fn share(&self) -> &RefSlotShare<'a, F, E> {
         &self.share
     }
 
@@ -371,8 +607,6 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    // 指向自己当前索引的共享引用
-    //leak &mut of this field is inposeable
     index: SyncUnsafeCell<usize>,
     //leak &mut of this field is inposeable
     pub ext: E::SlotShareExt<'data>,
@@ -399,15 +633,14 @@ where
     }
 }
 
-
 //--------------------------LockedGuards---------------------------
 
 mod group_ext {}
 pub trait GroupExt<F: ThreadModel>: 'static + Copy {
-    type GroupShareExt<'a>;
-    type InLockShareExt<'a>;
-    type SlotShareExt<'a>;
-    type SlotExt<'a>;
+    type GroupShareExt<'data>;
+    type InLockShareExt<'data>;
+    type SlotShareExt<'data>;
+    type SlotExt<'data>;
 }
 
 impl<'a, F, E> Deref for GroupShared<'a, F, E>
@@ -516,55 +749,5 @@ unsafe impl<T: Sync> Sync for SyncUnsafeCell<T> {}
 impl<T> From<T> for SyncUnsafeCell<T> {
     fn from(value: T) -> Self {
         Self(value.into())
-    }
-}
-
-
-
-struct ProtectedGuard<G>{
-    guard: G
-}
-
-impl<G: Deref> Deref for ProtectedGuard<G> {
-    type Target = G::Target;
-    fn deref(&self) -> &Self::Target {
-        self.guard.deref()
-    }
-}
-
-impl<G> ProtectedGuard<G> {
-    fn new(guard: G) -> Self{
-        Self { guard }
-    }
-
-    fn protected_mut(&mut self) -> ProtectedMut<'_, G::Target> 
-    where G: DerefMut 
-    {
-        ProtectedMut::new(self.guard.deref_mut())
-    }
-
-    unsafe fn as_mut(&mut self) -> &G::Target
-    where G: DerefMut
-    {
-        unsafe{ self.protected_mut().unprotect() }
-    }
-}
-
-struct ProtectedMut<'a, T: ?Sized>(&'a mut T);
-
-impl<'a, T: ?Sized> ProtectedMut<'a, T> {
-    fn new(v: &'a mut T) -> Self{
-        Self(v)
-    }
-
-    unsafe fn unprotect(self) -> &'a mut T{
-        self.0
-    }
-}
-
-impl<'a, T: ?Sized> Deref for ProtectedMut<'a, T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        self.0.deref()
     }
 }

@@ -36,6 +36,7 @@ pub trait Lockable {
     where
         Self: 'a;
 
+    fn new(data: Self::Item) -> Self;
     fn lock(&self) -> Self::Guard<'_>;
 }
 
@@ -48,6 +49,7 @@ pub type Mutex<F: ThreadModel, T> = F::Mutex<T>;
 //  具体实现：
 
 //需要在多线程中运行：
+#[derive(Clone, Copy)]
 pub struct ThreadSafe;
 impl ThreadModel for ThreadSafe {
     type RefCounter<T> = Arc<T>;
@@ -78,7 +80,8 @@ impl<T> Lockable for parking_lot::Mutex<T> {
 
 
 
-//只需要在单线程环境中运行：
+//不需要在多线程中运行：
+#[derive(Clone, Copy)]
 pub struct ThreadLocal;
 impl ThreadModel for ThreadLocal {
     type RefCounter<T> = Rc<T>;
