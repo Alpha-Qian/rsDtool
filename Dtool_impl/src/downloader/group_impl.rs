@@ -13,9 +13,9 @@ async fn clone_waker() -> Waker{
 #[derive(Clone, Copy)]
 struct Ext;
 impl<F: ThreadModel> GroupExt<F> for Ext {
-    type GroupShareExt<'a> = GroupShareExt<F>;
-    type InLockShareExt<'a> = InLockShareExt;
-    type SlotExt<'a> = SlotExt;//end
+    type ShareExt<'a> = GroupShareExt<F>;
+    type InLockExt<'a> = InLockShareExt;
+    type SlotInlockExt<'a> = SlotExt;//end
     type SlotShareExt<'a> = SlotShareExt<F>;//remain
 }
 
@@ -85,7 +85,7 @@ impl<'a, F: ThreadModel> AsyncGroupGuard<'a, F> {
             if self.guard.slots_mut().is_empty() {
                 Ready(())
             } else {
-                let a: &mut DownloadGroup<'_, F, Ext> = self.guard.group();
+                let a: &mut DownloadGroup<'_, F, Ext> = self.guard.group_mut();
                 a.inner.waker.register(c.waker());
                 Pending
             }
@@ -96,21 +96,14 @@ impl<'a, F: ThreadModel> AsyncGroupGuard<'a, F> {
         self.guard.
     }
 
-    fn abort_all(&mut self) {
-        let slots = self.guard.slots_optional();
-        
+    fn abort_all(&mut self) {// todo: 移动到
+        //let slots = self.guard.slots_optional();
+
         for i in self.guard.slots().unwrap(){
             i.share().abort.abort();
         }
-        self.guard.slots_mut()
+        self.guard.slots_optional().set_empty();
     }
-
-    async fn shutdown(&mut self) {
-        self.abort_all();
-        self.join_all().await;
-    }
-
-    
 }
 
 struct DownloadWorker<'data, F: ThreadModel>{
@@ -133,3 +126,10 @@ impl<'data, F: ThreadModel> DownloadWorker<'data, F> {
 
 
 
+async fn download<'data, F>(download_info: RequestInfo, reporter: Reporter<'data, F, Ext>, end: u64) 
+where F: ThreadModel
+{
+    let a: &<Ext as GroupExt<F>>::SlotShareExt<'data> = &reporter.slot_share().ext;
+    let process = (&a.remain)
+
+}
