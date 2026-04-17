@@ -13,10 +13,10 @@ async fn clone_waker() -> Waker{
 #[derive(Clone, Copy)]
 struct Ext;
 impl<F: ThreadModel> GroupExt<F> for Ext {
-    type ShareExt<'a> = GroupShareExt<F>;
+    type GroupExt<'a> = GroupShareExt<F>;
     type InLockExt<'a> = InLockShareExt;
     type SlotInlockExt<'a> = SlotExt;//end
-    type SlotShareExt<'a> = SlotShareExt<F>;//remain
+    type SlotExt<'a> = SlotShareExt<F>;//remain
 }
 
 struct GroupShareExt<F: ThreadModel>{
@@ -37,6 +37,16 @@ struct SlotShareExt<F: ThreadModel>{
     abort: AbortHandle,
 }
 
+
+async fn try_loop<'data, F>(
+    reporter_guard: ReporterGuard<'a>
+)
+where 
+    F: ThreadModel, 
+{
+    let request = reporter.share_ext().info.clone();
+
+}
 ///
 struct AsyncGroup<F: ThreadModel>{
     group: DownloadGroup<'static, F, Ext>,
@@ -129,7 +139,14 @@ impl<'data, F: ThreadModel> DownloadWorker<'data, F> {
 async fn download<'data, F>(download_info: RequestInfo, reporter: Reporter<'data, F, Ext>, end: u64) 
 where F: ThreadModel
 {
-    let a: &<Ext as GroupExt<F>>::SlotShareExt<'data> = &reporter.slot_share().ext;
+    let a: &<Ext as GroupExt<F>>::SlotExt<'data> = &reporter.slot_share().ext;
     let process = (&a.remain)
 
 }
+
+
+async fn try_loop(){
+    
+}
+
+

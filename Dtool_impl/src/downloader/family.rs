@@ -26,8 +26,8 @@ pub trait ThreadModel: 'static + Copy{
 
 pub trait RefCounted: Deref + Clone {
     fn new(v: Self::Target) -> Self;
-
-    
+    //fn strong_count(&self) -> usize;
+    //fn as_mut(&mut self) -> Option(&mut Slef::Target);
 }
 
 pub trait Lockable {
@@ -38,6 +38,10 @@ pub trait Lockable {
 
     fn new(data: Self::Item) -> Self;
     fn lock(&self) -> Self::Guard<'_>;
+
+    fn aquare(&self);
+    fn release(&self);
+    fn data_ptr(&self) -> *mut Self::Item;
 }
 
 
@@ -73,6 +77,10 @@ impl<T> Lockable for parking_lot::Mutex<T> {
     where
         Self: 'a;
 
+    fn new(data: Self::Item) -> Self {
+        Self::new(data)
+    }
+
     fn lock(&self) -> Self::Guard<'_> {
         self.lock()
     }
@@ -104,6 +112,9 @@ impl<T> Lockable for RefCell<T> {
         = RefMut<'a, T>
     where
         Self: 'a;
+    fn new(data: Self::Item) -> Self {
+        Self::new(data)
+    }
     fn lock(&self) -> Self::Guard<'_> {
         self.borrow_mut()
     }

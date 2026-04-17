@@ -1,7 +1,6 @@
 use anyhow::{Error, Result};
 use headers::{ContentRange, Header, HeaderMapExt, IfMatch, Range, ETag};
-use reqwest::header::HeaderMap;
-use reqwest::{Client, Method, Request, Response, Url, Version};
+use reqwest::{Client, Method, Request, Response, Url, Version, header::HeaderMap};
 
 ///作为crate的公共api
 #[derive(Clone, Debug)]
