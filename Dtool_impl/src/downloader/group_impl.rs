@@ -1,9 +1,15 @@
-use std::{future, marker::PhantomData, ops::{Deref, DerefMut}, task::{self, Poll, Waker}};
-use std::future::poll_fn;
-use std::task::Poll::{Ready, Pending};
-use futures::task::AtomicWaker;
+use std::{error::Error, fmt::Display, future, marker::PhantomData, ops::{Deref, DerefMut}, pin::{self, Pin}, sync::atomic::Ordering, task::{self, Poll, Waker}};
+use std::{future::poll_fn, task::Poll::{Pending, Ready}};
+use bytes::Bytes;
+use futures::{FutureExt, TryStream, TryStreamExt, task::AtomicWaker};
+use futures::{Stream, StreamExt, Sink};
+use headers::{HeaderMapExt, Range};
+use radium::Radium;
+use reqwest::{Client, Response};
 use tokio::task::AbortHandle;
-
+use std::cmp::min;
+use pin_project::pin_project;
+use std::task::ready;
 use crate::downloader::{download_group::{DownloadGroup, GroupExt, GroupGuard, Reporter, ReporterGuard}, family::{RefCounted, ThreadModel}, httprequest::RequestInfo, segment::Segment};
 
 async fn clone_waker() -> Waker{
@@ -21,7 +27,8 @@ impl<F: ThreadModel> GroupExt<F> for Ext {
 
 struct GroupShareExt<F: ThreadModel>{
     info: RequestInfo,
-    process: F::AtomicCell<u64>
+    process: F::AtomicCell<u64>,
+    writer: Box<dyn Writer>
 }
 struct InLockShareExt{
     segments: Vec<Segment>,
@@ -33,24 +40,104 @@ struct SlotExt{
 }
 
 struct SlotShareExt<F: ThreadModel>{
-    remain: F::RefCounter<u64>,
+    remain: F::AtomicCell<u64>,
     abort: AbortHandle,
+}
+
+enum BuildeNewOption{
+    RangeAble,
+    NoSupport
+}
+
+
+async fn build_new(client: &Client ,info: RequestInfo) -> BuildeNewOption{
+    let response = client.execute(info.build_request().headers_mut().typed_insert(Range::bytes(..))).await.unwrap()
+    //response.bytes_stream()
+    if response.status().as_u16() == 206{
+        return BuildeNewOption::RangeAble;
+    } else if response.status().as_u16() == 200 {
+        async fn download_repsonse(response: Response){}
+        let f1 = download_repsonse(response);
+        let f2 = async{};
+        let pined = pin::pin!(f1);
+        let r;
+        tokio::select! {
+            r1 = pined => {
+                r = r1;
+            }
+            r2 = f2 => {
+                r = pined.await;
+            }
+        }
+        response.bytes_stream()
+
+
+        
+    }
+    todo!()
+}
+struct RangeAble{
+
+}
+
+impl RangeAble {
+    fn
 }
 
 
 async fn try_loop<'data, F>(
-    reporter_guard: ReporterGuard<'a>
+    mut start: u64,
+    guard: ReporterGuard<'data, F, Ext>
 )
 where 
     F: ThreadModel, 
 {
-    let request = reporter.share_ext().info.clone();
+    let reporter = guard.release_lock();
+    while let result = try_once(&mut reporter, &mut start).await && let Err(()) = result  {
+        
+    }
 
+    
+}
+
+fn build_first_request(){}
+fn build_second_request(){}
+fn build_resume_request(){}
+
+fn get_first_repsonse(){}
+
+fn get_resume_response(){}
+
+
+async fn try_once<'data, F>(mut writer: impl Writer, client: Client, reporter: &mut Reporter<'data, F, Ext>, start: &mut u64,) -> Result<(),()>
+where F: ThreadModel
+{   
+    //let end = 
+    let request = reporter.group().info.clone();
+    let mut response = client
+        .execute(request.into())
+        .await.unwrap()
+        .error_for_status()
+        .map_err(|e| ())
+        .and_then(|response| Ok(response)).unwrap();
+
+    let mut writed = 0_u64;
+    
+    while let Some(bytes) = response.chunk().await.unwrap() {
+        let remain = reporter.slot_ext().remain.fetch_sub(writed, Ordering::Relaxed);
+        *start += writed;
+
+        writed = min(bytes.len() as u64, remain);
+        writer.pwrite(*start, bytes.slice(0..(remain as usize)));
+        
+    };
+    Ok(())
 }
 ///
-struct AsyncGroup<F: ThreadModel>{
+struct AsyncGroup<'a, F: ThreadModel>{
     group: DownloadGroup<'static, F, Ext>,
-    length: u64
+    length: u64,
+    client: &'a Client
 }
 
 impl<F: ThreadModel> AsyncGroup<F> {
@@ -133,20 +220,135 @@ impl<'data, F: ThreadModel> DownloadWorker<'data, F> {
         }
     }
 }
+// trait WriterCreater{
+
+// }
+trait Writer{
+    type Err;
+    async fn pwrite(&self, pos: u64, bytes: Bytes ) -> Result<(), Self::Err>;
+}
+
+trait ErrorTypes{
+    type Stream: Error + Display;
+    type Write: Error + Display;
+}
 
 
+fn filter_map(stream: impl Stream<Item = Bytes>){
+    stream.filter_map(f)
+}
+#[pin_project]
+struct CutOff<'a, St, F: ThreadModel>{
+    #[pin]
+    stream: St,
+    writed: i64,
+    remain: &'a F::AtomicCell<i64>
+}
 
-async fn download<'data, F>(download_info: RequestInfo, reporter: Reporter<'data, F, Ext>, end: u64) 
-where F: ThreadModel
+impl<'a, St, F> CutOff<'a, St, F> 
+where St: Stream<Item = Bytes>, F: ThreadModel
 {
-    let a: &<Ext as GroupExt<F>>::SlotExt<'data> = &reporter.slot_share().ext;
-    let process = (&a.remain)
+    fn new(stream: St, remain: &'a F::AtomicCell<i64>) -> Self{
+        Self {
+            stream,
+            writed: 0,
+            remain
+        }
+    }
+}
 
+impl<'a, St, F> Stream for CutOff<'a, St, F>
+where St: Stream<Item = Bytes>, F: ThreadModel
+{
+    type Item = Bytes;
+    fn poll_next(self: pin::Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+
+        match this.stream.poll_next(cx) {
+            Ready(Some(v)) => Ready({
+                let remain = this.remain.fetch_sub(*this.writed, Ordering::Relaxed);
+                if remain > 0{
+                    let data_len = v.len();
+                    let write_len = min(remain as usize, data_len);
+                    Some(v.slice(..write_len))
+                } else {
+                    None
+                }
+            }),
+            t @ _ => t
+        }
+    }
+}
+
+// Ready(Some(v)) => Ready({
+//                 let remain = this.remain.fetch_sub(*this.writed, Ordering::Relaxed);
+//                 if remain > 0{
+//                     let data_len = v.len();
+//                     let write_len = min(remain as usize, data_len);
+//                     Some(v.slice(..write_len))
+//                 } else {
+//                     None
+//                 }
+//             }),
+///一个实现了Unpin的下载器
+struct Task<'data, I, O>{
+    stream: I,
+    writer: O,
+    start: u64,
+}
+
+// impl<I, O, E> Future for Task<I, O> 
+// where I: TryStream<Ok = Bytes> + Unpin, 
+//     O: Writer,
+//     Self: Unpin,
+// {
+//     type Output = ();
+//     fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
+//         if let Some(bytes) = std::task::ready!(self.stream.poll_next_unpin(cx)){
+//             let r = ready!(self.writer.pwrite(self.start, bytes));
+//         } else {
+//             Ready(())
+//         }
+//     }
+// }
+
+
+impl<'data, I, O> Task<'data, I, O>
+where 
+    I: TryStream<Ok = Bytes> + Unpin, 
+    O: Writer,
+{
+    fn new(input: I, ouput: O, file_start: &mut u64, reporter: Reporter<'a, F, E>) {
+
+    }
+
+    async fn download_chunk<F: ThreadModel>(&mut self,remain: &F::AtomicCell<i64>) -> Result<(), TaskError<I::Error, O::Err>>{
+        while let Some(bytes) = 
+            self.stream
+                .try_next()
+                .await
+                .map_err(TaskError::Stream)
+                ?
+        {
+            let write_len = bytes.len();
+            self.writer
+                .pwrite(self.start, bytes)
+                .await
+                .map_err(TaskError::Write)
+                ?;
+            self.start += write_len as u64;
+        };
+        Ok(())
+    }
 }
 
 
-async fn try_loop(){
-    
+
+enum TaskError<T, U> {
+    Stream(T),
+    Write(U),
+    GetResponse,
+    StateCode,
+    Others(Box<dyn Error>)
 }
-
-
+type ErrorFamily<F: ErrorTypes> = TaskError<F::Stream, F::Write>;

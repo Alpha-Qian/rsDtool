@@ -2,9 +2,11 @@
 //!
 
 use std::cell::UnsafeCell;
-use std::mem;
+use std::mem::{self, ManuallyDrop};
+use std::ops::Deref;
 use std::{
     ops::{Index, IndexMut, RangeFrom},
+    ptr,
     slice::SliceIndex,
 };
 
@@ -27,17 +29,15 @@ where
     E: GroupExt<F>,
 {
     pub fn new(share_ext: E::GroupExt<'data>, inlock_ext: E::InLockExt<'data>) -> Self {
-        Self::from_raw(F::RefCounter::new(GroupShared::new(share_ext, inlock_ext)))
+        Self(F::RefCounter::new(GroupShared::new(share_ext, inlock_ext)))
     }
+
     pub(crate) fn from_raw(inner: F::RefCounter<GroupShared<'data, F, E>>) -> Self {
         Self(inner)
     }
 
     pub fn lock<'a>(self) -> GroupGuard<'data, F, E> {
-        let share = self.0;
-        let guard: InLockSharedGuard<'data, 'data, F, E> =
-            unsafe { std::mem::transmute(share.locked.lock()) };
-        unsafe { GroupGuard::from_raw(share, guard) }
+        GroupGuard::new(self)
     }
 
     pub fn share_ext(&self) -> &E::GroupExt<'data> {
@@ -50,15 +50,15 @@ unsafe fn new_reporter<'data, F, E>(
     slots: &mut SlotVec<'data, F, E>,
     slot_ext: E::SlotExt<'data>,
     slot_inlock: E::SlotInlockExt<'data>,
-) -> Reporter<'data, F, E> 
-where 
-    F: ThreadModel, 
-    E: GroupExt<F>
+) -> Reporter<'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
 {
-    let (share1 , share2 ) = SlotShare::<F, E>::new_pair(slots.len(), slot_ext);
-    let slot = unsafe{ Slot::with_raw(share1, slot_inlock) };
+    let (share1, share2) = SlotShare::<F, E>::new_pair(slots.len(), slot_ext);
+    let slot = unsafe { Slot::with_raw(share1, slot_inlock) };
     slots.push_slot(slot);
-    unsafe{ Reporter::from_raw(share.clone(), share2) }
+    unsafe { Reporter::from_raw(share.clone(), share2) }
 }
 ///每个下载分块向下载组报告状态的结构体
 /// 这个结构体是生产者也是消费者
@@ -77,13 +77,6 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    ///有&mut
-    fn new_in(
-        slot: &mut SlotVec<'data, F, E>,
-        slot_ext: E::SlotExt<'data>,
-        slot_inlock: E::SlotInlockExt<'data>,
-    ) {
-    }
     unsafe fn from_raw(
         group: F::RefCounter<GroupShared<'data, F, E>>,
         slot_share: RefSlotShare<'data, F, E>,
@@ -93,16 +86,14 @@ where
 
     ///Aquare Lock
     pub fn lock(self) -> ReporterGuard<'data, F, E> {
-        let guard = self.group.locked.lock();
-        let guard: InLockSharedGuard<'data, 'data, F, E> = unsafe { std::mem::transmute(guard) };
-        unsafe { ReporterGuard::from_raw(self.group, self.slot_share, guard) }
+        ReporterGuard::new(self)
     }
 
     ///GroupExt
-    pub fn share_ext(&self) -> &E::GroupExt<'data> {
+    pub fn group(&self) -> &E::GroupExt<'data> {
         &self.group.ext
     }
-    pub fn slot_share_ext(&self) -> &E::SlotExt<'data> {
+    pub fn slot_ext(&self) -> &E::SlotExt<'data> {
         &self.slot_share.ext
     }
 }
@@ -115,7 +106,6 @@ where
     E: GroupExt<F>,
 {
     group: F::RefCounter<GroupShared<'data, F, E>>,
-    guard: InLockSharedGuard<'data, 'data, F, E>, //<F::Mutex<InLockShare<'data, F, E>> as Lockable>::Guard<'a>,
 }
 
 //fn new_reporter()
@@ -125,34 +115,33 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    ///安全性：确保guard来自group内部
-    pub unsafe fn from_raw<'a>(
-        group: F::RefCounter<GroupShared<'data, F, E>>,
-        guard: InLockSharedGuard<'a, 'data, F, E>,
-    ) -> Self {
-        let guard: InLockSharedGuard<'data, 'data, F, E> = std::mem::transmute(guard);
-        Self { group, guard }
+
+    pub fn new(group: DownloadGroup<'data, F, E>) -> Self{
+        group.0.mutex.acquire();
+        Self { group: group.0 }
     }
 
     pub fn release_lock(self) -> DownloadGroup<'data, F, E> {
-        DownloadGroup(self.group)
+        let group = unsafe { ptr::read(&self.group) };
+        ManuallyDrop::new(self);
+        group.mutex.release();
+        DownloadGroup(group)
     }
 
     ///move to lockedgroup
     pub fn new_reporter(
         &mut self,
         slot_inlock: E::SlotInlockExt<'data>,
-        slot_share: E::SlotExt<'data>,
+        slot_ext: E::SlotExt<'data>,
     ) -> Reporter<'data, F, E> {
-        let slots = unsafe { self.slot_vec_mut() };
-
-        let (slot_share1, slot_share2) = SlotShare::<F, E>::new_pair(slots.len(), slot_share);
-        let slot = unsafe { Slot::with_raw(slot_share1, slot_inlock) };
-
-        //安全性：Slot来源于group内部
-        slots.push_slot(slot);
-        //安全性：slot_share来源于group内部
-        unsafe { Reporter::from_raw(self.group.clone(), slot_share2) }
+        unsafe {
+            new_reporter(
+                &self.group,
+                &mut (*self.group.locked.get()).slots,
+                slot_ext,
+                slot_inlock,
+            )
+        }
     }
 
     ///GroupExt
@@ -162,26 +151,30 @@ where
 
     ///InLockExt
     pub fn inlock_ext(&self) -> &E::InLockExt<'data> {
-        &self.guard.ext
+        unsafe { &(*self.group.locked.get()).ext }
     }
     pub fn inlock_ext_mut(&mut self) -> &mut E::InLockExt<'data> {
-        &mut self.guard.ext
+        unsafe { &mut (*self.group.locked.get()).ext }
     }
 
     ///SlotVec
     pub fn slot_vec(&self) -> &SlotVec<'data, F, E> {
-        &self.guard.slots
+        unsafe { &(*self.group.locked.get()).slots }
     }
     pub unsafe fn slot_vec_mut(&mut self) -> &mut SlotVec<'data, F, E> {
-        &mut self.guard.slots
+        unsafe { &mut (*self.group.locked.get()).slots }
     }
 }
 
+impl<'data, F: ThreadModel, E: GroupExt<F>> Drop for GroupGuard<'data, F, E> {
+    fn drop(&mut self) {
+        self.group.mutex.release();
+    }
+}
 ///reporter WriteGuard
 pub struct ReporterGuard<'data, F: ThreadModel, E: GroupExt<F>> {
     slot_share: F::RefCounter<SlotShare<'data, F, E>>,
     group_share: F::RefCounter<GroupShared<'data, F, E>>,
-    guard: InLockSharedGuard<'data, 'data, F, E>,
 }
 
 /// 可以访问 &GroupExt, &MySlotExt, &mut InLockExt, &mut MySlotInLockExt, &mut SlotVector(unsafe)
@@ -190,38 +183,58 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
+    fn new(reporter: Reporter<'data, F, E>) -> Self{
+        reporter.group.mutex.acquire();
+        unsafe{ Self::from_raw(reporter.group, reporter.slot_share) }
+    }
+    ///安全性：确保group和slot是成对的
+    /// 确保已解锁
     unsafe fn from_raw<'a>(
         group_share: F::RefCounter<GroupShared<'data, F, E>>,
         slot_share: F::RefCounter<SlotShare<'data, F, E>>,
-        guard: InLockSharedGuard<'a, 'data, F, E>,
+        //guard: InLockSharedGuard<'a, 'data, F, E>,
     ) -> Self {
         Self {
             group_share,
             slot_share,
-            guard: std::mem::transmute(guard),
         }
     }
 
-    fn release_lock(self) -> Reporter<'data, F, E> {
-        unsafe { Reporter::from_raw(self.group_share, self.slot_share) }
+    pub fn release_lock(self) -> Reporter<'data, F, E> {
+        unsafe {
+            let slot_share = ptr::read(&self.slot_share);
+            let group_share = ptr::read(&self.group_share);
+            ManuallyDrop::new(self);
+            group_share.mutex.release();
+            Reporter::from_raw(group_share, slot_share)
+        }
     }
     pub fn new_reporter(
         &mut self,
         slot_inlock: E::SlotInlockExt<'data>,
         slot_ext: E::SlotExt<'data>,
     ) -> Reporter<'data, F, E> {
-        unsafe{ new_reporter(&self.group_share, &mut self.guard.slots, slot_ext, slot_inlock) }
+        unsafe {
+            new_reporter(
+                &self.group_share,
+                &mut (*self.group_share.locked.get()).slots,
+                slot_ext,
+                slot_inlock,
+            )
+        }
     }
     /// # example
     /// '''rust
     /// reporter_guard_1.move_guard(reporter2)
     /// '''
-    pub unsafe fn swap_slot_share(&mut self, reporter: &mut Reporter<'data, F, E>) {
-        mem::swap(self.slot_share, &mut reporter.slot_share);
+    pub unsafe fn swap_slot(&mut self, reporter: &mut Reporter<'data, F, E>) {
+        debug_assert_eq!(self.group_share.deref() as *const _, reporter.group.deref() as *const _);
+
+        mem::swap(&mut self.slot_share, &mut reporter.slot_share);
     }
 
     ///GroupExt
-    pub fn group_ext(&self) -> &E::GroupExt<'data> {
+    pub fn group(&self) -> &E::GroupExt<'data> {
         &self.group_share.ext
     }
 
@@ -232,32 +245,45 @@ where
 
     ///InlockExt
     pub fn in_lock_ext(&self) -> &E::InLockExt<'data> {
-        &self.guard.ext
+        unsafe { &(*self.group_share.locked.get()).ext }
     }
     pub fn in_lock_ext_mut(&mut self) -> &mut E::InLockExt<'data> {
-        &mut self.guard.ext
+        unsafe { &mut (*self.group_share.locked.get()).ext }
     }
 
     ///MySlotInlockExt
-    pub fn my_slot_in_lock_ext(&self) -> &E::SlotInlockExt<'data> {
+    pub fn my_slot_in_lock(&self) -> &E::SlotInlockExt<'data> {
         //安全性：已经获得了锁
-        let index = unsafe { *self.slot_share.index.get() };
-        &self.guard.slots[index].ext
+        unsafe {
+            let index = *self.slot_share.index.get();
+            &(*self.group_share.locked.get()).slots[index].ext
+        }
     }
     pub fn my_slot_in_lock_ext_mut(&mut self) -> &mut E::SlotInlockExt<'data> {
-        let index = unsafe { *self.slot_share.index.get() };
-        &mut self.guard.slots[index].ext
+        unsafe {
+            let index = *self.slot_share.index.get();
+            &mut (*self.group_share.locked.get()).slots[index].ext
+        }
     }
 
     ///SlotVec
     pub fn slots(&self) -> &SlotVec<'data, F, E> {
-        &self.guard.slots
+        unsafe { &(*self.group_share.locked.get()).slots }
     }
     pub unsafe fn slots_mut(&mut self) -> &mut SlotVec<'data, F, E> {
-        &mut self.guard.slots
+        unsafe { &mut (*self.group_share.locked.get()).slots }
     }
 }
 
+impl<'data, F, E> Drop for ReporterGuard<'data, F, E>
+where
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    fn drop(&mut self) {
+        self.group_share.mutex.release();
+    }
+}
 //#[derive(Clone, Debug, Default)]
 ///安全性；不得添加非法内容
 struct SlotVec<'data, F, E>(pub Vec<Slot<'data, F, E>>)
@@ -378,8 +404,8 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    //leak &mut of this field will cause UB
-    locked: F::Mutex<InLockShared<'a, F, E>>,
+    mutex: F::Mutex,
+    locked: SyncUnsafeCell<InLockShared<'a, F, E>>,
 
     //leak &mut of this field is Safe
     pub ext: E::GroupExt<'a>,
@@ -392,17 +418,15 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> GroupShared<'a, F, E> {
             ext: inlock_ext,
         };
         Self {
-            locked: F::Mutex::new(t),
+            mutex: F::Mutex::new(),
+            locked: SyncUnsafeCell::new(t),
             ext: share_ext,
         }
     }
-    fn locked(&self) -> &F::Mutex<InLockShared<'a, F, E>> {
-        &self.locked
-    }
 
-    fn locked_mut(&mut self) -> &mut F::Mutex<InLockShared<'a, F, E>> {
-        &mut self.locked
-    }
+    // fn get_locked(&self) -> *mut InLockShared<'a, F, E> {
+    //     self.locked.get()
+    // }
 }
 type RefGroupShared<'data, F: ThreadModel, E: GroupExt<F>> =
     F::RefCounter<GroupShared<'data, F, E>>;
@@ -415,9 +439,6 @@ where
     slots: SlotVec<'a, F, E>, // or Box<[Slot]>?
     pub ext: E::InLockExt<'a>,
 }
-//pub type InLockSharedMut<
-pub type InLockSharedGuard<'a, 'data, F: ThreadModel, E: GroupExt<F>> =
-    <F::Mutex<InLockShared<'data, F, E>> as Lockable>::Guard<'a>;
 
 impl<'a, F, E> InLockShared<'a, F, E>
 where
@@ -505,6 +526,9 @@ struct ExtHander<'a, E: GroupExt<F>, F: ThreadModel> {
 struct SyncUnsafeCell<T>(UnsafeCell<T>);
 
 impl<T> SyncUnsafeCell<T> {
+    fn new(t: T) -> Self {
+        Self(UnsafeCell::new(t))
+    }
     fn get(&self) -> *mut T {
         self.0.get()
     }

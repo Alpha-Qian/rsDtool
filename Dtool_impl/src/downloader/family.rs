@@ -1,11 +1,8 @@
-use std::{
-    cell::{Cell, RefCell, RefMut, UnsafeCell},
-    ops::{Deref, DerefMut},
-    ptr::swap,
-    rc::Rc,
-    sync::{Arc, atomic::Ordering},
+use std::{mem,
+    arch::x86_64::_MM_PERM_BBAC, cell::{Cell, RefCell, RefMut, UnsafeCell}, ops::{Deref, DerefMut}, ptr::swap, rc::Rc, sync::{Arc, atomic::Ordering}
 };
 
+use parking_lot::{RawMutex, lock_api::RawMutex as RawMutexApi};
 use radium::Atom;
 use radium::{
     Radium, Radon,
@@ -21,7 +18,7 @@ pub trait ThreadModel: 'static + Copy{
     where
         Cell<T>: Radium<Item = T>;
 
-    type Mutex<T>: Lockable<Item = T>;
+    type Mutex: Lockable;
 }
 
 pub trait RefCounted: Deref + Clone {
@@ -30,25 +27,17 @@ pub trait RefCounted: Deref + Clone {
     //fn as_mut(&mut self) -> Option(&mut Slef::Target);
 }
 
-pub trait Lockable {
-    type Item;
-    type Guard<'a>: DerefMut<Target = Self::Item>//没有 Drop 因为没法检查guard字段是否实现Drop
-    where
-        Self: 'a;
-
-    fn new(data: Self::Item) -> Self;
-    fn lock(&self) -> Self::Guard<'_>;
-
-    fn aquare(&self);
+pub unsafe trait Lockable {
+    fn new() -> Self;
+    fn acquire(&self);
     fn release(&self);
-    fn data_ptr(&self) -> *mut Self::Item;
 }
 
 
 //快捷方式：
 pub type RefCounter<F: ThreadModel, T> = F::RefCounter<T>;
 pub type AtomicCell<F: ThreadModel, T> = F::AtomicCell<T>;
-pub type Mutex<F: ThreadModel, T> = F::Mutex<T>;
+pub type Mutex<F: ThreadModel> = F::Mutex;
 
 //  具体实现：
 
@@ -61,7 +50,7 @@ impl ThreadModel for ThreadSafe {
         = Atom<T>
     where
         Cell<T>: Radium<Item = T>;
-    type Mutex<T> = parking_lot::Mutex<T>;
+    type Mutex = RawMutex;
 }
 
 impl<T> RefCounted for Arc<T> {
@@ -70,21 +59,15 @@ impl<T> RefCounted for Arc<T> {
     }
 }
 
-impl<T> Lockable for parking_lot::Mutex<T> {
-    type Item = T;
-    type Guard<'a>
-        = parking_lot::MutexGuard<'a, Self::Item>
-    where
-        Self: 'a;
+// impl Lockable for parking_lot::Mutex<()> {
+//     fn acquire(&self) {
+//         std::mem::forget(self.lock());
+//     }
 
-    fn new(data: Self::Item) -> Self {
-        Self::new(data)
-    }
-
-    fn lock(&self) -> Self::Guard<'_> {
-        self.lock()
-    }
-}
+//     fn release(&self) {
+//         unsafe{ self.make_guard_unchecked(); }
+//     }
+// }
 
 
 
@@ -97,7 +80,7 @@ impl ThreadModel for ThreadLocal {
         = Cell<T>
     where
         Cell<T>: Radium<Item = T>;
-    type Mutex<T> = RefCell<T>;
+    type Mutex = BorrowChecker;
 }
 
 impl<T> RefCounted for Rc<T> {
@@ -106,28 +89,44 @@ impl<T> RefCounted for Rc<T> {
     }
 }
 
-impl<T> Lockable for RefCell<T> {
-    type Item = T;
-    type Guard<'a>
-        = RefMut<'a, T>
-    where
-        Self: 'a;
-    fn new(data: Self::Item) -> Self {
-        Self::new(data)
+
+struct BorrowChecker{
+    borrowed: UnsafeCell<bool>
+}
+
+unsafe impl Lockable for BorrowChecker {
+
+    fn new() -> Self {
+        Self { borrowed: false.into() }
     }
-    fn lock(&self) -> Self::Guard<'_> {
-        self.borrow_mut()
+    fn acquire(&self) {
+        let p = &mut unsafe {
+           *self.borrowed.get() 
+        };
+        if !*p {
+            *p = true
+        } else {
+            panic!("borrow check error")
+        }
+    }
+
+    fn release(&self) {
+        let p = &mut unsafe {
+           *self.borrowed.get() 
+        };
+        *p = false
     }
 }
 
-// struct UnsafeMutex<T>(UnsafeCell<T>);
-
-// impl Lockable for UnsafeMutex<T> {
-//     fn lock(&self) -> Self::Guard<'_> {
+// unsafe impl<T: RawMutexApi> Lockable for T {
+//     fn new() -> Self {
         
 //     }
-// }
+//     fn acquire(&self) {
+//         self.lock();
+//     }
 
-// struct UnsafeGuard{
-
+//     fn release(&self) {
+//         unsafe{self.unlock();}
+//     }
 // }

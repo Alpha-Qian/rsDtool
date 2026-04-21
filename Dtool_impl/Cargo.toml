@@ -16,3 +16,5 @@ thiserror = { workspace = true }
 futures = { workspace = true }
 scopeguard = {workspace = true}
 radium = {workspace = true}
+bytes = "1.11.1"
+pin-project = "1.1.11"
