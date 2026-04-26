@@ -115,8 +115,7 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-
-    pub fn new(group: DownloadGroup<'data, F, E>) -> Self{
+    pub fn new(group: DownloadGroup<'data, F, E>) -> Self {
         group.0.mutex.acquire();
         Self { group: group.0 }
     }
@@ -183,9 +182,9 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    fn new(reporter: Reporter<'data, F, E>) -> Self{
+    fn new(reporter: Reporter<'data, F, E>) -> Self {
         reporter.group.mutex.acquire();
-        unsafe{ Self::from_raw(reporter.group, reporter.slot_share) }
+        unsafe { Self::from_raw(reporter.group, reporter.slot_share) }
     }
     ///安全性：确保group和slot是成对的
     /// 确保已解锁
@@ -228,7 +227,10 @@ where
     /// reporter_guard_1.move_guard(reporter2)
     /// '''
     pub unsafe fn swap_slot(&mut self, reporter: &mut Reporter<'data, F, E>) {
-        debug_assert_eq!(self.group_share.deref() as *const _, reporter.group.deref() as *const _);
+        debug_assert_eq!(
+            self.group_share.deref() as *const _,
+            reporter.group.deref() as *const _
+        );
 
         mem::swap(&mut self.slot_share, &mut reporter.slot_share);
     }
@@ -504,6 +506,7 @@ pub trait GroupExt<F: ThreadModel>: 'static + Copy {
     type InLockExt<'data>;
     type SlotExt<'data>;
     type SlotInlockExt<'data>;
+    type RunResult<'data>;
 }
 
 ///还不知道具体怎么用

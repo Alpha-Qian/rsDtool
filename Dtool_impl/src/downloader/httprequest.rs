@@ -1,4 +1,3 @@
-use anyhow::{Error, Result};
 use headers::{ContentRange, Header, HeaderMapExt, IfMatch, Range, ETag};
 use reqwest::{Client, Method, Request, Response, Url, Version, header::HeaderMap};
 
@@ -8,7 +7,13 @@ pub struct RequestInfo {
     url: Url,
     pub(crate) headers: HeaderMap,
     version: Version,
+    //condition_request: bool
 }
+
+// pub enum CheckHeader{
+//     Setted,
+//     UnSetted,
+// }
 
 impl RequestInfo {
     pub fn new(url: Url, headers: HeaderMap) -> Self {
@@ -18,6 +23,8 @@ impl RequestInfo {
             version: Version::default(),
         }
     }
+
+    //pub fn from_raw(url: Url, headers: HeaderMap, )
 
     pub fn build_request(&self) -> Request {
         self.clone().into()

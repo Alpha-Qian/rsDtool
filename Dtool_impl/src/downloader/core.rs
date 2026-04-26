@@ -1,9 +1,7 @@
 use std::{any::Any, ops::RangeBounds, str::Bytes, sync::atomic::{AtomicU64, Ordering}};
 
-use anyhow::Result;
 use reqwest::{Client, Response, header::{Entry, HeaderValue}};
 
-use crate::{cache::{Cacher, Writer}, downloader::httprequest::RequestInfo};
 use core::{sync, task::Waker};
 use headers::{ETag, Header, HeaderMapExt, IfMatch, IfRange, LastModified, Range};
 
