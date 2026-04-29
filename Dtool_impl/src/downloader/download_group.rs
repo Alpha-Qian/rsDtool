@@ -329,7 +329,140 @@ where
     }
 }
 
+struct ReporterGuardBusy<'a, F, E>
+where 
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    group: F::RefCounter<GroupShared<'a, F, E>>,
+    slot: F::RefCounter<SlotShare<'a, F, E>>,
+}
 
+impl<'a, F, E> ReporterGuardBusy<'a, F, E>
+where 
+    F: ThreadModel,
+    E: GroupExt<F>
+{
+    pub fn busy(&self) -> &Busy<'a, F, E> {
+        unsafe {
+            let inlock = & *self.group.locked.get();
+            match inlock {
+                InLockShared::Busy(busy) => return busy,
+                _ => unreachable!(),
+            }
+        }
+    }
+    pub fn busy_mut(&mut self) -> &mut Busy<'a, F, E> {
+        unsafe {
+            let inlock = &mut *self.group.locked.get();
+            match inlock {
+                InLockShared::Busy(busy) => return busy,
+                _ => unreachable!(),
+            }
+        }
+    }
+
+}
+
+struct ReporterGuardIdle<'a, F, E>
+where 
+    F: ThreadModel,
+    E: GroupExt<F>
+{
+    group: F::RefCounter<GroupShared<'a, F, E>>,
+    slot: F::RefCounter<SlotShare<'a, F, E>>
+}
+
+impl<'a, F, E> ReporterGuardIdle<'a, F, E>
+where 
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    fn idle(&self) -> E::IdleData<'a> {
+        unsafe{
+            let inlock = & *self.group.locked.get();
+            match inlock {
+                InLockShared::Idle(data) => return data,
+                _ => unreachable!()
+            }
+        }
+    }
+    fn idle_mut(&mut self) -> &mut E::IdleData<'a> {
+        unsafe{
+            let inlock = &mut  *self.group.locked.get();
+            match inlock {
+                InLockShared::Idle(data) => return data,
+                _ => unreachable!()
+            }
+        }
+    }
+}
+
+struct GuardBusy<'a, F, E>
+where 
+    F: ThreadModel,
+    E: GroupExt<F>
+{
+    group: F::RefCounter<GroupShared<'a, F, E>>
+}
+
+impl<'a, F, E> GuardBusy<'a, F, E>
+where 
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    pub fn busy(&self) -> &Busy<'a, F, E> {
+        unsafe{
+            let inlock = & *self.group.locked.get();
+            match inlock {
+                InLockShared::Busy(data) => return data,
+                _ => unreachable!()
+            }
+        }
+    }
+    pub fn busy_mut(&mut self) -> &mut Busy<'a, F, E> {
+        
+        unsafe{
+            let inlock = &mut *self.group.locked.get();
+            match inlock {
+                InLockShared::Busy(data) => return data,
+                _ => unreachable!()
+            }
+        }
+    }
+}
+struct GuardIdle<'a, F, E>
+where 
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    group: F::RefCounter<GroupShared<'a, F, E>>
+}
+
+impl<'a, F, E> GuardIdle<'a, F, E>
+where 
+    F: ThreadModel,
+    E: GroupExt<F>,
+{
+    fn idle(&self) -> &Idle<'a, F, E> {
+        unsafe{
+            let inlock = & *self.group.locked.get();
+            match inlock {
+                InLockShared::Idle(data) => return data,
+                _ => unreachable!()
+            }
+        }
+    }
+    fn idle_mut(&self) -> &mut Idle<'a, F, E>{
+        unsafe{
+            let inlock = &mut *self.group.locked.get();
+            match inlock {
+                InLockShared::Idle(data) => return data,
+                _ => unreachable!() 
+            }
+        }
+    }
+}
 //#[derive(Clone, Debug, Default)]
 ///安全性；不得添加非法内容
 struct SlotVec<'data, F, E>(pub Vec<Slot<'data, F, E>>)
@@ -480,13 +613,19 @@ type RefGroupShared<'data, F: ThreadModel, E: GroupExt<F>> =
 
 
 
-pub enum InLockShared<'a, F, E>
-where
-    F: ThreadModel,
-    E: GroupExt<F>,
-{
-    Busy(SlotVec<'a, F, E>, E::BusyData<'a>), //只负责运行时，不负责存储（通常存储在RunReslut里）
-    IDLE(E::IdleData<'a>),
+// pub enum InLockShared<'a, F, E>
+// where
+//     F: ThreadModel,
+//     E: GroupExt<F>,
+// {
+//     Busy(SlotVec<'a, F, E>, E::BusyData<'a>), //只负责运行时，不负责存储（通常存储在RunReslut里）
+//     IDLE(E::IdleData<'a>),
+// }
+
+type InLockShared<'a, F: ThreadModel, E: GroupExt<F>> = GroupState<Busy<'a, F, E>, Idle<'a, F, E>>;
+pub enum GroupState<T, U>{
+    Busy(T),
+    Idle(U)
 }
 
 
