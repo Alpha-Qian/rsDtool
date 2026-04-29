@@ -7,13 +7,8 @@ pub struct RequestInfo {
     url: Url,
     pub(crate) headers: HeaderMap,
     version: Version,
-    //condition_request: bool
 }
 
-// pub enum CheckHeader{
-//     Setted,
-//     UnSetted,
-// }
 
 impl RequestInfo {
     pub fn new(url: Url, headers: HeaderMap) -> Self {

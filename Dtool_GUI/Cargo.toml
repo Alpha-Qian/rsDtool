@@ -1,7 +1,0 @@
-[package]
-name = "Dtool_GUI"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-eframe = "0.31.1"

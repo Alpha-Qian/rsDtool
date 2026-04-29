@@ -5,7 +5,7 @@ use crate::downloader::{
     segment::Segment,
 };
 use bytes::{Bytes};
-use futures::{StreamExt, channel::oneshot::Canceled, future::{Either, poll_fn, ready}};
+use futures::{StreamExt, channel::oneshot::Canceled, future::{Either, Pending, poll_fn, ready}};
 use futures::{FutureExt, Stream, TryStream, TryStreamExt};
 use futures::future::select;
 use headers::{AcceptRanges, ContentRange, ETag, Header, HeaderMapExt, IfUnmodifiedSince, LastModified, Range};
@@ -14,104 +14,115 @@ use reqwest::{
     Client, Request, Response, StatusCode, header::{Entry, HeaderMap, HeaderValue}
 };
 use std::{
-    cell::{Cell, UnsafeCell}, cmp::min, convert::Infallible, error::Error, fmt::{Debug, Display}, future, num::NonZero, ops::{Bound, ControlFlow, Deref, RangeBounds}, pin::{self, Pin}, sync::atomic::Ordering, task::{self, Poll, Waker}
+    cell::{Cell, UnsafeCell}, cmp::min, convert::Infallible, error::Error, fmt::{Debug, Display}, future, mem::swap, num::NonZero, ops::{Bound, ControlFlow, Deref, RangeBounds}, pin::{self, Pin}, sync::atomic::Ordering, task::{self, Poll, Waker}
 };
 use tokio::task::AbortHandle;
 
 
-macro_rules! any {
-    () => {
-        impl AnyThing
-    };
-}
+// async fn run_async_group<F: ThreadModel>(supervisor: impl FnOnce(&mut AsyncGroup<F>, abort: impl FnMut() -> bool)) {
+
+//     let group: AsyncGroup<F> = todo!();
+// }
 
 
-async fn run_async_group<F: ThreadModel>() {
-
-    let group: AsyncGroup<F> = todo!();
-
-
-}
-struct AsyncGroup<F: ThreadModel>{
-    inner: DownloadGroup<'static, F, Ext>
-}
-
-impl<F: ThreadModel> AsyncGroup<F> {
-
-    fn run_future<F: Future>(&mut self, future: impl FnOnce(Reporter<'static, F, Ext>) -> F) {
-        
-    } 
-
-    async fn wait_all(&mut self) {
-        let locked_group = self.inner.lock();
-        *locked_group.inlock_ext_mut().chancel = Channel::Waiting(get_waker().await)
-        futures::
-    }
-
-    fn wait_all2(&mut self) -> impl Future{
-        WaitAll(self)
-    }
-}
-
-struct WaitAll<'a>(&'a mut AsyncGroup);
-
-impl<'a> Future for WaitAll<'a>  {
-
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
-        let group = self.get_mut();
-        let mut locked_group = group.0.inner.lock();
-        *locked_group.inlock_ext_mut().chancel = Channel::Waiting(cx.waker().clone());
-        drop(locked_group);
-        Poll::Pending
-    }
-}
-
-enum WaitAll2<'a>{
-    State1(&'a mut AsyncGroup),
-    State2(&'a mut AsyncGroup)
-}
-
-impl<'a> Future for WaitAll2<'a>  {
-    type Output = Result<(), GroupError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        let this = self.get_mut();
-        loop {
-            match this {
-                Self::State1(async_group) => {
-                    let mut guard = async_group.inner.lock();
-                    *guard.inlock_ext_mut().chancel = Channel::Waiting(cx.waker().clone());
-                    drop(guard);
-
-                    *this = Self::State2(async_group);
-                    return Poll::Pending
-                }
-
-                Self::State2(async_group) => {
-                    let mut guard = async_group.inner.lock();
-                    match guard.inlock_ext().chancel {
-                        Channel::Done(r) => {
-                            return Poll::Ready(r)
-                        },
-                        _ => unreachable!()
-                    }
-                }
-            }
-        }
-    }
-}
-
-// fn get_waker() -> impl Future<Output = Waker>{
-//     poll_fn(|cx| task::Poll::Ready(cx.waker().clone()))
+// fn on_report_done<'a, F: ThreadModel>(reporter: Reporter<'static, F, Ext>, result: <Ext as GroupExt<F>>::RunResult<'a>){
+//     let mut guard = reporter.lock();
+//     match result {
+//         Ok(_) => {
+//             let slots = unsafe{ guard.slots_mut() };
+//             let index = *guard.my_index();
+//             slots.swap_remove_and_update_index(index);
+//             if guard.slots().0.is_empty() {
+//                 let waker = guard.in_lock_ext_mut().chancel.get_waker_and_set_result(Ok(()));
+//                 drop(guard);
+//                 waker.wake();
+//             }
+//         },
+//         t @ _ => {
+//             let inlock = guard.in_lock_ext_mut();
+//             let waker = guard.in_lock_ext_mut().chancel.get_waker_and_set_result(t);
+//             waker.wake();
+//         }
+//     }
 // }
 
 
 
 
+// struct AsyncGroup<F: ThreadModel>{
+//     inner: DownloadGroup<'static, F, Ext>
+// }
 
+// impl<F: ThreadModel> AsyncGroup<F> {
 
+//     fn run_future<F: Future>(&mut self, future: impl FnOnce(Reporter<'static, F, Ext>) -> F) {
+        
+//     } 
+
+//     async fn wait_all(&mut self) {
+//         let locked_group = self.inner.lock();
+//         *locked_group.inlock_ext_mut().chancel = Channel::Waiting(get_waker().await)
+//         futures::
+//     }
+
+//     fn wait_all2(&mut self) -> impl Future{
+//         WaitAll(self)
+//     }
+// }
+
+// struct WaitAll<'a>(&'a mut AsyncGroup);
+
+// impl<'a> Future for WaitAll<'a>  {
+
+//     type Output = ();
+
+//     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> task::Poll<Self::Output> {
+//         let group = self.get_mut();
+//         let mut locked_group = group.0.inner.lock();
+//         *locked_group.inlock_ext_mut().chancel = Channel::Waiting(cx.waker().clone());
+//         drop(locked_group);
+//         Poll::Pending
+//     }
+// }
+
+// enum WaitAll2<'a>{
+//     State1(&'a mut AsyncGroup),
+//     State2(&'a mut AsyncGroup)
+// }
+
+// impl<'a> Future for WaitAll2<'a>  {
+//     type Output = Result<(), GroupError>;
+
+//     fn poll(self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
+//         let this = self.get_mut();
+//         loop {
+//             match this {
+//                 Self::State1(async_group) => {
+//                     let mut guard = async_group.inner.lock();
+//                     *guard.inlock_ext_mut().chancel = Channel::Waiting(cx.waker().clone());
+//                     drop(guard);
+
+//                     *this = Self::State2(async_group);
+//                     return Poll::Pending
+//                 }
+
+//                 Self::State2(async_group) => {
+//                     let mut guard = async_group.inner.lock();
+//                     match guard.inlock_ext().chancel {
+//                         Channel::Done(r) => {
+//                             return Poll::Ready(r)
+//                         },
+//                         _ => unreachable!()
+//                     }
+//                 }
+//             }
+//         }
+//     }
+// }
+
+// fn get_waker() -> impl Future<Output = Waker>{
+//     poll_fn(|cx| task::Poll::Ready(cx.waker().clone()))
+// }
 
 
 #[derive(Clone, Copy)]
@@ -121,17 +132,17 @@ impl<F: ThreadModel> GroupExt<F> for Ext {
     type InLockExt<'a> = InLockShareExt;
     type SlotInlockExt<'a> = SlotExt; //end
     type SlotExt<'a> = SlotShareExt<F>; //remain
+    type IdleData<'data> = Result<(), GroupError>;
 }
 
 struct GroupShareExt<F: ThreadModel> {
     info: RequestInfo,
     process: F::AtomicCell<u64>,
     writer: Box<dyn PWriter<Error = dyn Error>>,
+    abort: F::AtomicCell<bool>,
 }
 
 struct InLockShareExt {
-    segments: Vec<Segment>,
-    //waker: Option<Waker>,
     chancel: Channel
 }
 
@@ -141,13 +152,30 @@ struct SlotExt {
 
 struct SlotShareExt<F: ThreadModel> {
     remain: F::AtomicCell<u64>,
-    abort: AbortHandle,
 }
 
-enum Channel<F: ThreadModel>{
-    Waiting(Waker, Vec<Slot<'static, F, Ext>>/* Unsafe field */),
+enum Channel<F>{
+    Waker(F),
     Done(Result<(), GroupError>),
 }
+
+// impl<F> Channel<F> {
+//     fn get_waker_and_set_result(&mut self, result: Result<(), GroupError>) -> F{
+
+//         let mut result = Channel::Done(result);
+//         swap(self, &mut result);
+//         match result {
+//             Self::Waker(waker) => waker,
+//             _ => unreachable!()
+//         }
+//     }
+
+//     fn set_waker(&mut self, waker: F) -> Result<(), GroupError> {
+//         let waker = Channel::Waker(waker);
+//         swap(self, &mut waker);
+//     }
+
+// }
 
 ///需要导致所有线程停止的错误
 enum GroupError {
@@ -211,24 +239,8 @@ async fn download(response: Response, process: u64, remain: &impl Radium<Item = 
     if response.status() != 206 && process != 0{
         return group_error(GroupError::FileNoSupportRange)
     }
-
-
-
-
-
 }
 
-// enum DownloadResult<T>{
-//     Ok(T)
-//     Task(TaskError<(),(),()>),
-//     Group(GroupError)
-// }
-
-// impl<T> DownloadResult<T> {
-//     fn () {
-        
-//     }
-// }
 type TaskResult = Result<Result<(), TaskError<>>, GroupError>;
 fn task_error(task_error: TaskError<(),(),()>) -> TaskResult {
     Ok(Err(task_error))
@@ -238,7 +250,7 @@ fn group_error(group_error: GroupError) ->TaskResult {
     Err(group_error)
 }
 
-async fn first_response_download(client: &Client, info: &mut RequestInfo, test_abort: &Cell<bool>, abort_me: &Cell<bool>) {
+async fn first_response_download<F: ThreadModel>(client: &Client, info: &mut RequestInfo,writer: &impl PWriter, remain: &F::AtomicCell<i64>, test_abort: &Cell<bool>, abort_me: &Cell<bool>) {
     let mut first_try = true;
     let process = 0_u64;
     let range = Range::bytes(process..).unwrap();
@@ -249,8 +261,14 @@ async fn first_response_download(client: &Client, info: &mut RequestInfo, test_a
 
     }
     if process == 0{
-        check_rangeable_for_full_range_request(info, &response, false)
-    };
+        check_rangeable_for_full_range_request(info, &response, false);
+    }
+
+    let task = Task::new(response.bytes_stream(), writer, None);
+    //task.
+    task.download(process, remain, || {abort_me.get()}).await?
+
+
 } 
 
 
@@ -279,32 +297,6 @@ async fn handle_test_request(client: &Client, info: &RequestInfo, bounds: impl R
         return Ok(Some(response))
     }
     Ok(None)
-}
-
-
-// async fn handle_test_request_loop(client: &Client, info: &RequestInfo, bounds: impl RangeBounds<u64> + Clone) -> Result<Option<Response>, ()>{
-//     let mut retry_times = 5;
-//     loop {
-//         if retry_times == 0 {break Err(())}
-//         retry_times -= 1;
-//         handle_test_request(client, info, bounds.clone()).await?;
-//     }
-// }
-
-///retry and return the last error
-async fn ok_or_retry<Fut: Future<Output = Result<T, E>>, T, E> (mut f: impl FnMut() -> Fut, mut times: usize) -> Result<T, E> {
-    loop{
-        times -= 1;
-        match f().await{
-            Ok(value) => return Ok(value),
-            Err(err) => {
-                times -= 1;
-                if times == 0{
-                    return Err(err)
-                }
-            }
-        }
-    }
 }
 
 fn include_resume_check_header(headers: &HeaderMap) -> bool{
@@ -375,8 +367,6 @@ pub fn rangeable_for_partial_request(response: &Response) -> bool{
     is_partial_response(response)
 }
 
-//const F : for<'a> fn(&'a reqwest::Response) -> bool = is_partial_response;
-
 fn is_partial_response(response: &Response) -> bool {
     response.status() == 206
 }
@@ -413,15 +403,15 @@ async fn send_second_request(client: &Client, info: &RequestInfo) {
 }
 
 
-struct Task<St, W>{
+struct Task<'a, St, W>{
     stream: St,
-    writer: W,
+    writer: &'a W,
     last_remain: i64,
 
 }
 
-impl<St, W> Task<St, W> {
-    fn new(stream: St, writer: W, last_remain: Option<i64>) -> Self{
+impl<'a, St, W> Task<'a, St, W> {
+    fn new(stream: St, writer: &'a W, last_remain: Option<i64>) -> Self{
         let last_remain = last_remain.unwrap_or(i64::MAX);
         Self{
             stream,
@@ -430,11 +420,11 @@ impl<St, W> Task<St, W> {
         }
     }
 
-    fn into_raw(self) -> (St, W, i64) {
+    fn into_raw(self) -> (St, &'a W, i64) {
         (self.stream, self.writer, self.last_remain)
     }
 }
-impl<St, W> Task<St, W>
+impl<'a, St, W> Task<'a, St, W>
 where 
     St: TryStream<Ok = Bytes> + Unpin,
     W: PWriter,
@@ -620,144 +610,3 @@ impl PWriter for File {
 
 
 
-
-// impl RangeAble {
-//     fn
-// }
-
-// async fn try_loop<'data, F>(
-//     mut start: u64,
-//     guard: ReporterGuard<'data, F, Ext>
-// )
-// where
-//     F: ThreadModel,
-// {
-//     let reporter = guard.release_lock();
-//     while let result = try_once(&mut reporter, &mut start).await && let Err(()) = result  {
-
-//     }
-
-// }
-
-// fn build_first_request(){}
-// fn build_second_request(){}
-// fn build_resume_request(){}
-
-// fn get_first_repsonse(){}
-
-// fn get_resume_response(){}
-
-// async fn try_once<'data, F>(mut writer: impl PWriter, client: Client, reporter: &mut Reporter<'data, F, Ext>, start: &mut u64,) -> Result<(),()>
-// where F: ThreadModel
-// {
-//     //let end =
-//     let request = reporter.group().info.clone();
-//     let mut response = client
-//         .execute(request.into())
-//         .await.unwrap()
-//         .error_for_status()
-//         .map_err(|e| ())
-//         .and_then(|response| Ok(response)).unwrap();
-
-//     let mut writed = 0_u64;
-
-//     while let Some(bytes) = response.chunk().await.unwrap() {
-//         let remain = reporter.slot_ext().remain.fetch_sub(writed, Ordering::Relaxed);
-//         *start += writed;
-
-//         writed = min(bytes.len() as u64, remain);
-//         writer.pwrite(*start, bytes.slice(0..(remain as usize)));
-
-//     };
-//     Ok(())
-// }
-// ///
-// struct AsyncGroup<'a, F: ThreadModel>{
-//     group: DownloadGroup<'static, F, Ext>,
-//     length: u64,
-//     client: &'a Client
-// }
-
-// impl<F: ThreadModel> AsyncGroup<F> {
-//     // async fn new(raw: DownloadGroup<'static, F, Ext>) -> Self{
-//     //     let waker = clone_waker().await;
-//     //     Self{raw, waker}
-//     // }
-//     async fn new_reporter() {
-//         let waker = clone_waker().await;
-//         todo!()
-//     }
-
-//     fn lock(&self) -> AsyncGroupGuard<'_, F>{
-//         AsyncGroupGuard::new(self.group.lock())
-//     }
-
-//     fn join_all(&self) {
-//         self.lock().join_all();
-//     }
-
-// }
-
-// struct AsyncGroupGuard<'a, F: ThreadModel>{
-//     guard: GroupGuard<'a, 'static, F, Ext>,
-// }
-
-// impl<'a, F: ThreadModel> AsyncGroupGuard<'a, F> {
-
-//     fn new(guard: GroupGuard<'a, 'static, F, Ext>) -> Self{
-//         Self{guard}
-//     }
-
-//     async fn new_reporter(&mut self) -> Option<AsyncReporter<F>>{
-//         if self.guard.in_lock_ext().aborting{ return None;}
-//         let waker = clone_waker().await;
-//         let a = self.guard.new_reporter(0, <F::RefCounter<u64> as RefCounted>::new(0));
-//         AsyncReporter{reporter: a, waker}.into()
-//     }
-
-//     fn join_all(&mut self) -> impl Future {
-//         poll_fn(|c| {
-//             if self.guard.slots_mut().is_empty() {
-//                 Ready(())
-//             } else {
-//                 let a: &mut DownloadGroup<'_, F, Ext> = self.guard.group_mut();
-//                 a.inner.waker.register(c.waker());
-//                 Pending
-//             }
-//         })
-//     }
-
-//     fn set_waker(&mut self, waker: Waker) -> Waker{
-//         self.guard.
-//     }
-
-//     fn abort_all(&mut self) {// todo: 移动到
-//         //let slots = self.guard.slots_optional();
-
-//         for i in self.guard.slots().unwrap(){
-//             i.share().abort.abort();
-//         }
-//         self.guard.slots_optional().set_empty();
-//     }
-// }
-
-// struct DownloadWorker<'data, F: ThreadModel>{
-//     reporter: Reporter<'data, F, Ext>
-// }
-
-// impl<'data, F: ThreadModel> DownloadWorker<'data, F> {
-//     fn exit(&self) {
-//         let mut guard = self.reporter.lock();
-//         guard.remove_me();
-//         let waker = guard.inlock_ext().waker.take();
-//         //先释放再唤醒，避免竞争
-//         drop(guard);
-
-//         if let Some(waker) = waker{
-//             waker.wake();
-//         }
-//     }
-// }
-// // trait WriterCreater{
-
-// }

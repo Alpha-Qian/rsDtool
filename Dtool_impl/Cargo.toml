@@ -9,7 +9,6 @@ reqwest = { workspace = true }
 tokio = { workspace = true }
 parking_lot = { workspace = true }
 headers = "0.4.1"
-Dtool_core = { path = "../Dtool_core" }
 clap = "4.5.40"
 #anyhow = "1.0.98"
 thiserror = { workspace = true }
