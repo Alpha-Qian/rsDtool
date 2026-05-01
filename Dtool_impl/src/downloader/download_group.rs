@@ -29,9 +29,9 @@ where
     F: ThreadModel,
     E: GroupExt<F>,
 {
-    pub fn new(share_ext: E::GroupShare<'data>, inlock_ext: E::InLockExt<'data>) -> Self {
-        Self(F::RefCounter::new(GroupShared::with_raw(share_ext, inlock_ext)))
-    }
+    // pub fn new(share_ext: E::GroupShare<'data>, inlock_ext: E::InLockExt<'data>) -> Self {
+    //     Self(F::RefCounter::new(GroupShared::with_raw(share_ext, inlock_ext)))
+    // }
 
     pub(crate) fn from_raw(inner: F::RefCounter<GroupShared<'data, F, E>>) -> Self {
         Self(inner)
@@ -122,15 +122,23 @@ where
         &self.group.ext
     }
 
+    // data
+    pub fn data(&self) -> &E::Data<'a> {
+        &self.locked().data
+    }
+    pub fn data_mut(&mut self) -> &mut E::Data<'a> {
+        &mut self.locked_mut().data
+    }
+
     //busy or idle data
-    pub fn data(&self) -> State<&E::BusyData<'a>, &E::IdleData<'a>> {
-        match self.locked() {
+    pub fn state_data(&self) -> State<&E::BusyData<'a>, &E::IdleData<'a>> {
+        match &self.locked().state {
             State::Busy(busy) => State::Busy(&busy.data),
             State::Idle(idle) => State::Idle(&idle.data)
         }
     }
-    pub fn data_mut(&mut self) -> State<&mut E::BusyData<'a>, &mut E::IdleData<'a>> {
-        match self.locked_mut() {
+    pub fn state_data_mut(&mut self) -> State<&mut E::BusyData<'a>, &mut E::IdleData<'a>> {
+        match &mut self.locked_mut().state {
             State::Busy(busy) => State::Busy(&mut busy.data),
             State::Idle(idle) => State::Idle(&mut idle.data)
         }
@@ -145,7 +153,7 @@ where
     }
 
     pub fn get_state(self) -> GroupGuardState<'a, F, E> {
-        match self.locked() {
+        match self.locked().state {
             State::Busy(_) => State::Busy(GuardBusy(self)),
             State::Idle(_) => State::Idle(GuardIdle(self))
         }
@@ -202,7 +210,7 @@ where
     }
 
     pub fn get_state(self) -> ReporterGuardState<'a, F, E> {
-        match self.locked() {
+        match self.locked().state {
             State::Busy(_) => State::Busy(ReporterGuardBusy(self)),
             State::Idle(_) => State::Idle(ReporterGuardIdle(self))
         }
@@ -217,15 +225,22 @@ where
         mem::swap(&mut self.slot, &mut reporter.slot_share);
     }
 
+    //data
+    pub fn data(&self) -> &E::Data<'a> {
+        &self.locked().data
+    }
+    pub fn data_mut(&mut self) -> &mut E::Data<'a> {
+        &mut self.locked_mut().data
+    }
     //busy or idle data
-    pub fn data(&self) -> State<&E::BusyData<'a>, &E::IdleData<'a>> {
-        match self.locked() {
+    pub fn state_data(&self) -> State<&E::BusyData<'a>, &E::IdleData<'a>> {
+        match &self.locked().state{
             State::Busy(busy) => State::Busy(&busy.data),
             State::Idle(idle) => State::Idle(&idle.data)
         }
     }
-    pub fn data_mut(&mut self) -> State<&mut E::BusyData<'a>, &mut E::IdleData<'a>> {
-        match self.locked_mut() {
+    pub fn state_data_mut(&mut self) -> State<&mut E::BusyData<'a>, &mut E::IdleData<'a>> {
+        match &mut self.locked_mut().state {
             State::Busy(busy) => State::Busy(&mut busy.data),
             State::Idle(idle) => State::Idle(&mut idle.data)
         }
@@ -297,17 +312,17 @@ where
     fn busy(&self) -> &Busy<'a, F, E> {
         unsafe{
             let inlock = & *self.0.group.locked.get();
-            match inlock {
-                InLockShared::Busy(data) => return data,
+            match & inlock.state {
+                State::Busy(data) => return data,
                 _ => unreachable!()
             }
         }
     }
-    pub fn busy_mut(&mut self) -> &mut Busy<'a, F, E> {
+    fn busy_mut(&mut self) -> &mut Busy<'a, F, E> {
         unsafe{
             let inlock = &mut *self.0.group.locked.get();
-            match inlock {
-                InLockShared::Busy(data) => return data,
+            match &mut inlock.state {
+                State::Busy(data) => return data,
                 _ => unreachable!()
             }
         }
@@ -321,7 +336,7 @@ where
 
     pub fn swap_state(mut self, idle: Idle<'a, F, E>) -> (GuardIdle<'a, F, E>, Busy<'a, F, E>) {
         let mut output = State::Idle(idle);
-        let inlock = self.0.locked_mut();
+        let inlock = &mut self.0.locked_mut().state;
         mem::swap(inlock, &mut output);
         match output {
             State::Busy(busy) => {
@@ -332,8 +347,16 @@ where
     }
 
     pub fn to_idle(mut self, f: impl FnOnce(Busy<'a, F, E>) -> Idle<'a, F, E>) -> GuardIdle<'a, F, E> {
-        unsafe{ self.0.locked_mut().busy_to_idle_unchecked(f) };
+        unsafe{ self.0.locked_mut().state.busy_to_idle_unchecked(f) };
         GuardIdle(self.0)
+    }
+
+    //Data
+    pub fn data(&self) -> &E::Data<'a> {
+        &self.0.locked().data
+    }
+    pub fn data_mut(&mut self) -> &mut E::Data<'a> {
+        &mut self.0.locked_mut().data
     }
 
     //Slots
@@ -371,11 +394,12 @@ where
 {
 
 
+    //priv
     fn idle(&self) -> &Idle<'a, F, E> {
         unsafe{
             let inlock = & *self.0.group.locked.get();
-            match inlock {
-                InLockShared::Idle(data) => return data,
+            match &inlock.state {
+                State::Idle(data) => return data,
                 _ => unreachable!()
             }
         }
@@ -383,8 +407,8 @@ where
     fn idle_mut(&self) -> &mut Idle<'a, F, E>{
         unsafe{
             let inlock = &mut *self.0.group.locked.get();
-            match inlock {
-                InLockShared::Idle(data) => return data,
+            match &mut inlock.state {
+                State::Idle(data) => return data,
                 _ => unreachable!() 
             }
         }
@@ -393,7 +417,7 @@ where
     ///busy中必须是有效数据
     pub unsafe fn swap_state(mut self, busy: Busy<'a, F, E>) -> (GuardBusy<'a, F, E>, Idle<'a, F, E>) {
         let mut output = State::Busy(busy);
-        mem::swap(self.0.locked_mut(), &mut output);
+        mem::swap(&mut self.0.locked_mut().state, &mut output);
         match output {
             State::Idle(idle) => return (GuardBusy(self.0), idle),
             _ => unreachable!()
@@ -403,8 +427,16 @@ where
 
     ///安全性：f不发生panic
     pub unsafe fn to_busy(mut self, f: impl FnOnce(Idle<'a, F, E>) -> Busy<'a, F, E>) -> GuardBusy<'a, F, E> {
-        unsafe{ self.0.locked_mut().idle_to_busy_unchecked(f) };
+        unsafe{ self.0.locked_mut().state.idle_to_busy_unchecked(f) };
         GuardBusy(self.0)
+    }
+
+    //Data
+    pub fn data(&self) -> & E::Data<'a> {
+        &self.0.locked().data
+    }
+    pub fn data_mut(&mut self) -> &mut E::Data<'a> {
+        &mut self.0.locked_mut().data
     }
 
     //Idle Data
@@ -434,21 +466,21 @@ where
     E: GroupExt<F>
 {
 
-    //Busy
-    pub fn busy(&self) -> &Busy<'a, F, E> {
+    //priv
+    fn busy(&self) -> &Busy<'a, F, E> {
         unsafe {
             let inlock = & *self.0.group.locked.get();
-            match inlock {
-                InLockShared::Busy(busy) => return busy,
+            match &inlock.state {
+                State::Busy(busy) => return busy,
                 _ => unreachable!(),
             }
         }
     }
-    pub fn busy_mut(&mut self) -> &mut Busy<'a, F, E> {
+    fn busy_mut(&mut self) -> &mut Busy<'a, F, E> {
         unsafe {
             let inlock = &mut *self.0.group.locked.get();
-            match inlock {
-                InLockShared::Busy(busy) => return busy,
+            match &mut inlock.state {
+                State::Busy(busy) => return busy,
                 _ => unreachable!(),
             }
         }
@@ -463,7 +495,7 @@ where
     pub fn swap_state(mut self, idle: Idle<'a, F, E>) -> (ReporterGuardIdle<'a, F, E>, Busy<'a, F, E>) {
 
         let mut output = State::Idle(idle);
-        mem::swap(self.0.locked_mut(), &mut output);
+        mem::swap(&mut self.0.locked_mut().state, &mut output);
         match output {
             State::Busy(busy) => return (ReporterGuardIdle(self.0), busy),
             _ => unreachable!()
@@ -472,8 +504,16 @@ where
 
     ///安全性：f不发生panic
     pub unsafe fn to_idle(mut self, f: impl FnOnce(Busy<'a, F, E>) -> Idle<'a, F, E>) -> ReporterGuardIdle<'a, F, E> {
-        unsafe{ self.0.locked_mut().busy_to_idle_unchecked(f) };
+        unsafe{ self.0.locked_mut().state.busy_to_idle_unchecked(f) };
         ReporterGuardIdle(self.0)
+    }
+
+    //Data
+    pub fn data(&self) -> &E::Data<'a> {
+        &self.0.locked().data
+    }
+    pub fn data_mut(&mut self) -> &mut E::Data<'a> {
+        &mut self.0.locked_mut().data
     }
 
     //Slots
@@ -510,21 +550,21 @@ where
     E: GroupExt<F>,
 {
 
-    //Idle
-    pub fn idle(&self) -> &Idle<'a, F, E> {
+    //priv Idle
+    fn idle(&self) -> &Idle<'a, F, E> {
         unsafe{
             let inlock = & *self.0.group.locked.get();
-            match inlock {
-                InLockShared::Idle(data) => return data,
+            match &inlock.state {
+                State::Idle(data) => return data,
                 _ => unreachable!()
             }
         }
     }
-    pub fn idle_mut(&mut self) -> &mut Idle<'a, F, E> {
+    fn idle_mut(&mut self) -> &mut Idle<'a, F, E> {
         unsafe{
             let inlock = &mut  *self.0.group.locked.get();
-            match inlock {
-                InLockShared::Idle(data) => return data,
+            match &mut inlock.state {
+                State::Idle(data) => return data,
                 _ => unreachable!()
             }
         }
@@ -533,7 +573,7 @@ where
     ///安全性：busy中是有效数据
     pub unsafe fn swap_state(mut self, busy: Busy<'a, F, E>) -> (ReporterGuardBusy<'a, F, E>, Idle<'a, F, E>) {
         let mut output = State::Busy(busy);
-        mem::swap(self.0.locked_mut(), &mut output);
+        mem::swap(&mut self.0.locked_mut().state, &mut output);
         match output {
             State::Idle(idle) => return (ReporterGuardBusy(self.0), idle),
             _ => unreachable!()
@@ -542,7 +582,7 @@ where
 
     ///安全性：确保f不会Panic
     pub unsafe fn to_busy(mut self, f: impl FnOnce(Idle<'a, F, E>) -> Busy<'a, F, E>) -> ReporterGuardBusy<'a, F, E> {
-        unsafe{ self.0.locked_mut().idle_to_busy_unchecked(f) };
+        unsafe{ self.0.locked_mut().state.idle_to_busy_unchecked(f) };
         ReporterGuardBusy(self.0)
     }
 
@@ -551,6 +591,14 @@ where
     // }
 
     //Data
+    pub fn data(&self) -> & E::Data<'a> {
+        &self.0.locked().data
+    }
+    pub fn data_mut(&mut self) -> &mut E::Data<'a> {
+        &mut self.0.locked_mut().data
+    }
+
+    //Idle Data
     pub fn idle_data(&self) -> & E::IdleData<'a> {
         &self.idle().data
     }
@@ -703,14 +751,17 @@ impl<'a, F: ThreadModel, E: GroupExt<F>> GroupShared<'a, F, E> {
 type RefGroupShared<'data, F: ThreadModel, E: GroupExt<F>> =
     F::RefCounter<GroupShared<'data, F, E>>;
 
-type InLockShared<'a, F: ThreadModel, E: GroupExt<F>> = State<Busy<'a, F, E>, Idle<'a, F, E>>;
+//type InLockShared<'a, F: ThreadModel, E: GroupExt<F>> = State<Busy<'a, F, E>, Idle<'a, F, E>>;
 type GroupGuardState<'a, F:ThreadModel, E: GroupExt<F>> = State<GuardBusy<'a, F, E>, GuardIdle<'a, F, E>>;
 type ReporterGuardState<'a, F: ThreadModel, E:GroupExt<F>> = State<ReporterGuardBusy<'a, F, E>, ReporterGuardIdle<'a, F, E>>;
 
-// struct InLockShared<'a, F:ThreadModel, E:GroupExt<F>> {
-//     data: E::Data<'a>,
-//     state: State<Busy<'a, F, E>, Idle<'a, F, E>>
-// }
+struct InLockShared<'a, F:ThreadModel, E:GroupExt<F>> {
+    data: E::Data<'a>,
+    state: State<Busy<'a, F, E>, Idle<'a, F, E>>
+}
+
+
+
 pub enum State<T, U>{
     Busy(T),
     Idle(U)
