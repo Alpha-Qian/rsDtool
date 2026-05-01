@@ -128,10 +128,9 @@ use tokio::task::AbortHandle;
 #[derive(Clone, Copy)]
 struct Ext;
 impl<F: ThreadModel> GroupExt<F> for Ext {
-    type GroupExt<'a> = GroupShareExt<F>;
-    type InLockExt<'a> = InLockShareExt;
-    type SlotInlockExt<'a> = SlotExt; //end
-    type SlotExt<'a> = SlotShareExt<F>; //remain
+    type GroupShare<'a> = GroupShareExt<F>;
+    type SlotInlock<'a> = SlotExt; //end
+    type SlotShare<'a> = SlotShareExt<F>; //remain
     type IdleData<'data> = Result<(), GroupError>;
 }
 
@@ -142,9 +141,6 @@ struct GroupShareExt<F: ThreadModel> {
     abort: F::AtomicCell<bool>,
 }
 
-struct InLockShareExt {
-    chancel: Channel
-}
 
 struct SlotExt {
     end: u64,
