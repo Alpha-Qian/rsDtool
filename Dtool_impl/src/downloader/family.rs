@@ -1,5 +1,4 @@
-use std::{mem,
-    arch::x86_64::_MM_PERM_BBAC, cell::{Cell, RefCell, RefMut, UnsafeCell}, ops::{Deref, DerefMut}, ptr::swap, rc::Rc, sync::{Arc, atomic::Ordering}
+use std::{arch::x86_64::_MM_PERM_BBAC, cell::{Cell, RefCell, RefMut, UnsafeCell}, mem, ops::{Deref, DerefMut}, ptr::swap, rc::Rc, str::FromStr, sync::{Arc, atomic::Ordering}
 };
 
 use parking_lot::{RawMutex, lock_api::RawMutex as RawMutexApi};
@@ -11,7 +10,7 @@ use radium::{
 
 //命名参考：https://aistudio.google.com/prompts/1kdVbB3yyDukhLxzDQZ6XTWpbUyWQ1eMg
 
-pub trait ThreadModel: 'static + Copy{
+pub trait ThreadModel: 'static{
     type RefCounter<T>: RefCounted<Target = T>; //这个生命周期视乎就是默认的约束//要求SharePtr<T>必须活得和T一样久
 
     type AtomicCell<T: Atomic + PartialEq>: Radium<Item = T>
@@ -39,6 +38,7 @@ pub type RefCounter<F: ThreadModel, T> = F::RefCounter<T>;
 pub type AtomicCell<F: ThreadModel, T> = F::AtomicCell<T>;
 pub type Mutex<F: ThreadModel> = F::Mutex;
 
+pub type SharedAtomic<F: ThreadModel, T> = F::RefCounter<F::AtomicCell<T>>;
 //  具体实现：
 
 //需要在多线程中运行：
@@ -59,15 +59,6 @@ impl<T> RefCounted for Arc<T> {
     }
 }
 
-// impl Lockable for parking_lot::Mutex<()> {
-//     fn acquire(&self) {
-//         std::mem::forget(self.lock());
-//     }
-
-//     fn release(&self) {
-//         unsafe{ self.make_guard_unchecked(); }
-//     }
-// }
 
 
 
@@ -117,16 +108,3 @@ unsafe impl Lockable for BorrowChecker {
         *p = false
     }
 }
-
-// unsafe impl<T: RawMutexApi> Lockable for T {
-//     fn new() -> Self {
-        
-//     }
-//     fn acquire(&self) {
-//         self.lock();
-//     }
-
-//     fn release(&self) {
-//         unsafe{self.unlock();}
-//     }
-// }

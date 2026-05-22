@@ -1,0 +1,7 @@
+{
+  "prettier": {
+    "parser": ""
+  },
+  "semantic_tokens": "off",
+  "soft_wrap": "none"
+}

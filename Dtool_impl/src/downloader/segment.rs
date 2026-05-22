@@ -20,7 +20,7 @@ pub struct Segment{
 
 impl Segment {
 
-    pub fn new(start: u64,remain: NonZeroU64) -> Self{
+    pub fn new(start: u64, remain: NonZeroU64) -> Self{
         Self { start, remain }
     }
 
@@ -51,17 +51,9 @@ impl Segment {
     }
 }
 
-
-// impl<T: RangeBounds<u64>> TryFrom<T> for Segment {
-//     fn try_from(value: T) -> Result<Self, Self::Error> {
-        
-//     }
-// }
-
 pub struct SegmentIter{
     step: NonZeroU64,
 
-    //
     remain: Option<NonZeroU64>,
     start: u64
 }

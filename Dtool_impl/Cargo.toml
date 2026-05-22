@@ -17,3 +17,5 @@ scopeguard = {workspace = true}
 radium = {workspace = true}
 bytes = "1.11.1"
 pin-project = "1.1.11"
+# reqwest-retry = "0.9.1"
+# reqwest-middleware = "0.5.1"

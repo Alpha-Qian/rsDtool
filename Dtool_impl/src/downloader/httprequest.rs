@@ -1,5 +1,7 @@
+use std::ops::RangeBounds;
+
 use headers::{ContentRange, Header, HeaderMapExt, IfMatch, Range, ETag};
-use reqwest::{Client, Method, Request, Response, Url, Version, header::HeaderMap};
+use reqwest::{Client, Method, Request, Response, Url, Version, header::{self, Entry, HeaderMap}};
 
 ///作为crate的公共api
 #[derive(Clone, Debug)]
@@ -18,8 +20,6 @@ impl RequestInfo {
             version: Version::default(),
         }
     }
-
-    //pub fn from_raw(url: Url, headers: HeaderMap, )
 
     pub fn build_request(&self) -> Request {
         self.clone().into()
