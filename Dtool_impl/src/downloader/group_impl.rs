@@ -1,8 +1,8 @@
 
 use crate::downloader::{
     download_group::{
-        GroupExt, GroupGuard, Slot, State, 
-    }, error::{DownloaderError, SubError}, family::{RefCounted, ThreadModel}, httprequest::RequestInfo, segment::Segment,
+        GroupExt, GroupGuard,
+    }, error::SubError, family::{RefCounted, ThreadModel}, httprequest::RequestInfo, segment::Segment,
 };
 use bytes::Bytes;
 use futures::{future::select, io::Write};
@@ -18,19 +18,18 @@ use reqwest::{
     Client, Response, StatusCode,
     header::{Entry, HeaderMap},
 };
-use core::{ffi, panic};
 use std::{
     cell::Cell, cmp::min, error::Error, fmt::Debug, marker::PhantomData, ops::{ControlFlow, RangeBounds}, pin, process::Output, sync::atomic::Ordering, time::Instant
 };
-use super::pwriter::PWriter;
+use super::pwriter::BufWriter;
 
 ///resume
-fn download_unchecked<S: DownloadStream, W: PWriter>(info: RequestInfo, client: impl AsyncFn(RequestInfo) -> Result<S, SubError<S,W>>, pwriter: W) {
-    
+fn download_unchecked<S: DownloadStream, W: BufWriter>(info: RequestInfo, client: impl AsyncFn(RequestInfo) -> Result<S, SubError<S,W>>, pwriter: W) {
+
 }
 
 trait Strategy{
-    
+
 }
 
 
@@ -55,9 +54,9 @@ async fn simple_test<W>(client: &Client, info: &mut RequestInfo, allow_unversion
     Ok((response, resouce_type))
 }
 
-async fn hanlde_uncomfirmed_response<F: ThreadModel>(length: u64, response: Response, client: &Client, info: &RequestInfo, writer: impl PWriter) {
+async fn hanlde_uncomfirmed_response<F: ThreadModel>(length: u64, response: Response, client: &Client, info: &RequestInfo, writer: impl BufWriter) {
     async {
-        let remain = 
+        let remain =
         let stream = response.bytes_stream();
         let context = DownloadContext::new(stream, &writer, None);
         context.download(0, remain, abort_token)
@@ -99,7 +98,7 @@ fn new_downloader_unchecked<S: DownloadStream>(info: RequestInfo, client: impl A
 
 struct Ext<W, S>(PhantomData<(W, S)>);
 
-impl<W: PWriter, S: DownloadStream,F: ThreadModel> GroupExt<F> for Ext<W, S> {
+impl<W: BufWriter, S: DownloadStream,F: ThreadModel> GroupExt<F> for Ext<W, S> {
     type GroupShare<'a> = GroupShareExt<W, F>;
     //GroupInlock
     type Data<'a> = ();
@@ -109,7 +108,7 @@ impl<W: PWriter, S: DownloadStream,F: ThreadModel> GroupExt<F> for Ext<W, S> {
     type SlotInlock<'a> = SlotExt; //end
     type SlotShare<'a> = SlotShareExt<F>; //remain
 }
-struct GroupShareExt<W: PWriter, F: ThreadModel> {
+struct GroupShareExt<W: BufWriter, F: ThreadModel> {
     info: RequestInfo,
     process: F::AtomicCell<u64>,
     writer: W,
@@ -126,7 +125,7 @@ struct SlotShareExt<F: ThreadModel> {
 
 
 
-async fn build_new(client: &Client, mut info: RequestInfo, pwriter: impl PWriter) {
+async fn build_new(client: &Client, mut info: RequestInfo, pwriter: impl BufWriter) {
     let mut request = info.build_request();
     request
         .headers_mut()
@@ -179,7 +178,7 @@ async fn build_new(client: &Client, mut info: RequestInfo, pwriter: impl PWriter
 async fn first_response_download<F: ThreadModel>(
     client: &Client,
     info: &mut RequestInfo,
-    writer: &impl PWriter,
+    writer: &impl BufWriter,
     remain: &F::AtomicCell<i64>,
     test_abort: &Cell<bool>,
     abort_me: &Cell<bool>,
@@ -267,7 +266,7 @@ fn set_file_version(info: &mut HeaderMap, response: &HeaderMap) -> bool {
 }
 
 
-pub async fn response_builder<S: DownloadStream, W: PWriter>(client: &Client, info: &RequestInfo) -> Result<Response, SubError<S, W>> {
+pub async fn response_builder<S: DownloadStream, W: BufWriter>(client: &Client, info: &RequestInfo) -> Result<Response, SubError<S, W>> {
     let response = match client.execute(info.build_request()).await {
         Ok(r) => r,
         Err(e) if e.
@@ -289,7 +288,7 @@ pub fn hendle_range_response(response: Response) -> (impl Stream, bool) {
 }
 
 
-async fn download_response<'a>(context: &mut DownloadContext<'a, impl Stream, impl PWriter>, ) {
+async fn download_response<'a>(context: &mut DownloadContext<'a, impl Stream, impl BufWriter>, ) {
 
 }
 
@@ -418,7 +417,7 @@ impl<'a, S, W> DownloadContext<'a, S, W> {
 impl<'a, St, W> DownloadContext<'a, St, W>
 where
     St: TryStream<Ok = Bytes> + Unpin,
-    W: PWriter,
+    W: BufWriter,
 {
     async fn download(
         &mut self,
@@ -477,216 +476,3 @@ trait DownloadClient{
 pub(crate) trait DownloadStream: TryStream<Ok = Bytes, Error: Error> + Unpin {}
 
 impl<T: TryStream<Ok = Bytes, Error: Error> + Unpin> DownloadStream for T {}
-
-enum Adapt{
-    UnInit,
-    Streaming,
-}
-
-impl Adapt{
-    fn new() -> Self{
-        Self::UnInit
-    }
-
-    async fn poll_download<F: ThreadModel>(&mut self, state: State<F>) {
-        //let output = None;
-        loop {
-            let action: Command = match self {
-                (Self::UnInit) => {
-                    state.poll_download(Input::Init { remain: 0 })
-                }
-            }
-
-            match action{
-                Command::SendFullRequest => {
-                    todo!()
-                    *self = Adapt::Streaming
-                }
-
-                Command::Write(b) => {
-
-                }
-
-                Command::SendRequest(, , , , , )
-
-                Command::
-            }
-        }
-    }
-}
-
-
-#[derive(Debug)]
-enum Input<F: ThreadModel>{
-    Init{
-        remain: F::RefCounter<F::AtomicCell<i64>>
-    },
-    GettedHeaders(StatusCode, HeaderMap),
-    StreamChunk(Option<Bytes>),
-    TimeOut(TimeOutId),
-    Poll,
-}
-
-#[derive(Debug)]
-enum Command{
-    Empty,
-    Write(Bytes),
-
-    SendFullRequest;
-    SendRequest(start: u64, end: u64),
-    SetTimeOut(Instant, TimeOutId),
-    Error(DownloaderError, Option<()>),
-}
-
-#[derive(Debug)]
-enum TimeOutId{
-    Retry
-}
-enum State<F: ThreadModel>{
-    Requesting,
-    Streaming{
-        progress_cache: u64,
-        remain: F::RefCounter<F::AtomicCell<i64>>,
-    },
-    WaittingTimeOut(TimeOutId),
-    Done,
-}
-
-impl<F: ThreadModel> State<F>{
-    fn poll_download(&mut self,input: Input<F>) -> Command{
-        match (self, input){
-            
-            //获取请求
-            (Self::Requesting, Input::GettedHeaders(status, header )) => {
-                *self = Self::Streaming { progress_cache: (), remain: () };
-                Command::Empty
-            },
-
-            (Self::Streaming{..}, Input::StreamChunk(b)) => {
-                Command::Write(todo!())
-            }
-
-            (Self::WaittingTimeOut(t), Input::TimeOut(t32)) => {
-                if t != t32{
-                    panic!("error time id")
-                }
-                Command::Empty
-            }
-
-
-            _ => panic!("Error Input: {input:?} State: {self:?}")
-        }
-    }
-}
-
-impl<F: ThreadModel> Debug for State<F> {
-    
-}
-
-
-
-
-//test_response
-
-
-
-
-
-enum TestInput<'a>{
-    Init,
-    GettedFullResponseHeader{
-        succes_Status: StatusCode,
-        header: &'a HeaderMap,
-        info: &'a mut RequestInfo,
-    },
-    GettedParticalResponseHeader,
-
-    FullResponseChunk(bytes),
-
-    Done,
-}
-
-enum TestState<F: ThreadModel>{
-    UnInit,
-    WaitFullHeaders,
-    FullResponseAndGetParitcalResponse{
-        progress_cache: u64, 
-        remain: F::RefCounter<F::AtomicCell<i64>>,
-        length: u64,
-    },
-    OnlyParicalResponse
-}
-
-
-enum TestOutput{
-    SendFullResponse,
-    NeedParticalResponse,
-    Write{
-        pos: u64,
-        data: Bytes
-    },
-
-    ResultCanResumeDirect,
-    ResultCantResume,
-    ResultCanResume,
-}
-
-
-impl<F: ThreadModel> TestState<F>{
-    fn poll_test(&mut self, input: TestInput) -> TestOutput{
-        match (Self, input) {
-            (Self::UnInit, TestInput::Init) => {
-                *self = Self::WaitFullHeaders;
-                return TestOutput::SendFullResponse
-            }
-            (Self::WaitFullHeaders, TestInput::GettedFullResponseHeader{
-                    succes_Status,
-                    header, 
-                    info
-                }) => {
-                if succes_Status != StatusCode::PARTIAL_CONTENT{
-                    *self = TestState::FullResponseAndGetParitcalResponse;
-                    return TestOutput::NeedParticalResponse
-                } else {
-                    return TestOutput::ResultCanResumeDirect
-                }
-            }
-
-            (
-                Self::FullResponseAndGetParitcalResponse { progress_cache, remain, length} , 
-                TestInput::FullResponseChunk(bytes)
-            ) => {
-
-            }
-
-            (
-                Self::FullResponseAndGetParitcalResponse { _, _, _ },
-                TestInput::GettedParticalResponseHeader
-            ) => return TestOutput::ResultCanResume
-            //(_ , TestInput::GettedParticalResponseHeader) => TestOutput::ResultCanResume,
-            _ => panic!("error")
-        }
-    }
-}
-
-
-
-enum TestAdapt{
-    UnInit,
-}
-
-impl TestAdapt{
-    async fn pool_test<F: ThreadModel>(&mut self, state: TestState<F>) {
-        loop{
-            let action = match self {
-                Self::UnInit => state.poll_test(TestInput::Init),
-            };
-
-            match action {
-                TestOutput::SendFullResponse => {
-                    
-                }
-            }
-        }
-    }
-}

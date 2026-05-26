@@ -1,7 +1,10 @@
 use std::ops::RangeBounds;
 
-use headers::{ContentRange, Header, HeaderMapExt, IfMatch, Range, ETag};
-use reqwest::{Client, Method, Request, Response, Url, Version, header::{self, Entry, HeaderMap}};
+use headers::{ContentRange, ETag, Header, HeaderMapExt, IfMatch, Range};
+use reqwest::{
+    Client, Method, Request, Response, Url, Version,
+    header::{self, Entry, HeaderMap},
+};
 
 ///作为crate的公共api
 #[derive(Clone, Debug)]
@@ -10,7 +13,6 @@ pub struct RequestInfo {
     pub(crate) headers: HeaderMap,
     version: Version,
 }
-
 
 impl RequestInfo {
     pub fn new(url: Url, headers: HeaderMap) -> Self {
@@ -25,7 +27,11 @@ impl RequestInfo {
         self.clone().into()
     }
 
-    pub fn with_parts(url: Url, headers: HeaderMap, version: Version) -> Result<Self,()> {
+    pub fn into_request(self) -> Request {
+        self.into()
+    }
+
+    pub fn with_parts(url: Url, headers: HeaderMap, version: Version) -> Result<Self, ()> {
         if headers.typed_get::<Range>().is_none() {
             Ok(Self {
                 url,
@@ -67,8 +73,6 @@ impl RequestInfo {
         &mut self.version
     }
 
-
-
     pub fn upate_etag(&mut self, etag: ETag) {
         if let Some(v) = self.headers.get_mut(IfMatch::name()) {
             // etag.encode(values);
@@ -80,7 +84,6 @@ impl RequestInfo {
         todo!()
     }
 }
-
 
 impl Into<Request> for RequestInfo {
     fn into(self) -> Request {

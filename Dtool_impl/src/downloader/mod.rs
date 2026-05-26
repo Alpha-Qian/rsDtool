@@ -1,11 +1,11 @@
 pub mod download_group;
-pub mod httprequest;
-pub mod segment;
+mod error;
 pub mod family;
 pub mod group_impl;
-mod error;
-mod strategy;
-mod pwriter;
-mod base;
-mod subcontext;
+pub mod httprequest;
 mod marker;
+mod pwriter;
+pub mod segment;
+mod strategy;
+mod stream_creater;
+mod subcontext;
