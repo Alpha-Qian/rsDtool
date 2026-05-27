@@ -1,4 +1,4 @@
-use std::{error::Error, fmt::{Debug, Display, write}, ops::{Add, ControlFlow, Sub}, time::{Duration, Instant, SystemTime}};
+use std::{error::Error, fmt::{Debug, Display, Write, write}, ops::{Add, ControlFlow, Sub}, time::{Duration, Instant, SystemTime}};
 use reqwest::{Response, StatusCode};
 use crate::downloader::{group_impl::DownloadStream, pwriter::BufWriter};
 use super::pwriter::BufWriter;
@@ -13,9 +13,9 @@ where
     if response.status() == StatusCode::PARTIAL_CONTENT{
         return Ok(response)
     } else if response.status() == StatusCode::OK && !only_partical {
-        return Err(SubError::Other(DownloaderError::ErrorSuccesStatus(status_code)))
+        return Err(SubError::Download(DownloaderError::ErrorSuccesStatus(status_code)))
     } else if 200 < status_code.as_u16() && status_code.as_u16() < 300 {
-        return Err(SubError::Other(DownloaderError::ErrorSuccesStatus(status_code)))
+        return Err(SubError::Download(DownloaderError::ErrorSuccesStatus(status_code)))
     };
 
     let error = response.error_for_status_ref().unwrap_err();
@@ -60,9 +60,11 @@ where
     W: BufWriter,
 {
     Writer(W::Error),
-    Other(DownloaderError),
+    //GetStream(S::Error, Option<RetrySuggest>),
     NetWork(S::Error, Option<RetrySuggest>),
+
     SubDownload(SubDownloadError),
+    Download(DownloaderError),
 }
 
 impl<S, W> SubError<S, W>
@@ -97,7 +99,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Writer(e) => f.debug_tuple("Writer").field(e).finish(),
-            Self::Other(e) => f.debug_tuple("Other").field(e).finish(),
+            Self::Download(e) => f.debug_tuple("Other").field(e).finish(),
             Self::NetWork(e) => f.debug_tuple("NetWork").field(e).finish(),
             //Self::CustomRetry(r, e ) => f.debug_tuple("CustomRetry").field(r).finish(),
         }
@@ -113,7 +115,7 @@ where
         match self{
             Self::NetWork(e) => write!(f, "网络错误"),
             Self::Writer(e) => write!(f, "写入错误"),
-            Self::Other(e) => write!(f, "逻辑错误"),
+            Self::Download(e) => write!(f, "逻辑错误"),
             Self::CustomRetry(r) => write!(f, "todo")
         }
     }
@@ -130,7 +132,7 @@ where
         match self {
             Self::NetWork(e) => Some(e),
             Self::Writer(e) => Some(e),
-            Self::Other(e) => Some(e),
+            Self::Download(e) => Some(e),
             Self::CustomRetry(r) => Some(r)
         }
     }
@@ -320,5 +322,149 @@ impl Display for RetrySuggest{
             },
             Self::WaitForNetWork => write!(f,"似乎是网络问题，建议一会后重试")
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct RawNetWorkError<T>(T);
+
+
+impl<T> RawNetWorkError<T> {
+    pub fn add_suggest(self, suggest: RetrySuggest) -> IntoNetWorkError<T> {
+        IntoNetWorkError{ error: self.0, suggest: Some(suggest) }
+    }
+
+    pub fn none_suggest(self) -> IntoNetWorkError<T> {
+        IntoNetWorkError{ error: self.0, suggest: None }
+    }
+
+    pub fn into_network_error(self, suggest: Option<RetrySuggest>) -> IntoNetWorkError<T> {
+        IntoNetWorkError{ error: self.0, suggest }
+    }
+}
+
+impl<T> From<T> for RawNetWorkError<T>{
+    fn from(value: T) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> Display for RawNetWorkError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RawNetWorkError")
+    }
+}
+
+impl<T: Error + 'static> Error for RawNetWorkError<T> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+
+impl<S, W> From<RawNetWorkError<S::Error>> for SubError<S, W>
+where
+    S: DownloadStream,
+    W: BufWriter,
+{
+    fn from(value: RawNetWorkError<S::Error>) -> Self {
+        Self::NetWork(value.0, None)
+    }
+}
+
+
+///防止重复impl 的new type包装器
+#[derive(Debug)]
+pub struct IntoNetWorkError<E>{
+    error: E,
+    suggest: Option<RetrySuggest>,
+}
+
+impl<T> IntoNetWorkError<T> {
+    fn new(error: T) -> Self{
+        Self{
+            error,
+            suggest: None
+        }
+    }
+
+    fn with_suggest(error: T, suggest: RetrySuggest) -> Self {
+        Self{
+            error,
+            suggest: Some(suggest)
+        }
+    }
+
+    fn with_raw(error: T, suggest: Option<RetrySuggest>) -> Self {
+        Self{
+            error,
+            suggest: suggest
+        }
+    }
+}
+
+impl<T> From<T> for IntoNetWorkError<T> {
+    fn from(value: T) -> Self {
+        Self{
+            error: value,
+            suggest: None,
+        }
+    }
+}
+
+
+impl<S, W> From<IntoNetWorkError<S::Error>> for SubError<S, W>
+where
+    S: DownloadStream,
+    W: BufWriter,
+{
+    fn from(value: IntoNetWorkError<S::Error>) -> Self {
+        Self::NetWork(value.error, None)
+    }
+}
+
+impl<T> Display for IntoNetWorkError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("IntoNetWorkError")
+    }
+}
+
+impl<T: Error + 'static> Error for IntoNetWorkError<T> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+#[derive(Debug)]
+pub struct IntoWriterError<E>(E);
+
+
+impl<T> From<T> for IntoWriterError<T> {
+    fn from(value: T) -> Self {
+        Self(value)
+    }
+}
+
+
+impl<S, W> From<IntoWriterError<W::Error>> for SubError<S, W>
+where
+    S: DownloadStream,
+    W: BufWriter,
+{
+    fn from(value: IntoWriterError<W::Error>) -> Self {
+        Self::Writer(value.0)
+    }
+}
+
+
+impl<T: Display> Display for IntoWriterError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<T: Error + 'static> Error for IntoWriterError<T> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.0)
     }
 }
