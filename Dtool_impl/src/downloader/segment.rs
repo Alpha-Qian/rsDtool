@@ -1,26 +1,25 @@
 //!持久化
 
-use std::{error::Error, fmt::{Debug, Display}, mem, num::NonZeroUsize, ops::RangeBounds, sync::Arc};
-use std::num::NonZeroU64;
 use crate::downloader::httprequest::RequestInfo;
+use std::{
+    error::Error,
+    fmt::{Debug, Display},
+    num::{NonZeroU64, NonZeroUsize},
+};
 
-
-
-pub struct ResumeInfo{
+pub struct ResumeInfo {
     request: RequestInfo,
-    segments: Vec<Segment>
+    segments: Vec<Segment>,
 }
 
-
 #[derive(Clone)]
-pub struct Segment{
+pub struct Segment {
     pub start: u64,
     pub remain: NonZeroU64,
 }
 
 impl Segment {
-
-    pub fn new(start: u64, remain: NonZeroU64) -> Self{
+    pub fn new(start: u64, remain: NonZeroU64) -> Self {
         Self { start, remain }
     }
 
@@ -28,7 +27,7 @@ impl Segment {
     //     Self::new(end.checked_sub(remain.into())? , remain).into()
     // }
 
-    pub fn full(size: NonZeroU64) -> Self{
+    pub fn full(size: NonZeroU64) -> Self {
         Self::new(0, size)
     }
 
@@ -49,13 +48,17 @@ impl Segment {
     pub fn split_by_step(self, step: NonZeroU64) -> SegmentIter {
         SegmentIter::new(self.start, self.remain.into(), step)
     }
+
+    pub fn into_raw(self) -> (u64, NonZeroU64) {
+        (self.start, self.remain)
+    }
 }
 
-pub struct SegmentIter{
+pub struct SegmentIter {
     step: NonZeroU64,
 
     remain: Option<NonZeroU64>,
-    start: u64
+    start: u64,
 }
 
 impl Iterator for SegmentIter {
@@ -64,21 +67,20 @@ impl Iterator for SegmentIter {
         if let Some(remain) = self.remain {
             if remain > self.step {
                 let origin_start = self.start;
-                self.remain = NonZeroU64::new(remain.get() - self.step.get());//remain -= step
+                self.remain = NonZeroU64::new(remain.get() - self.step.get()); //remain -= step
                 self.start += self.step.get();
                 Segment::new(origin_start, self.step).into()
             } else {
                 self.remain = None;
                 Segment::new(self.start, remain).into()
             }
-
         } else {
             None
         }
     }
 }
 
-impl TryFrom<SegmentIter> for Segment{
+impl TryFrom<SegmentIter> for Segment {
     type Error = FromSegmentIterError;
     fn try_from(value: SegmentIter) -> Result<Self, Self::Error> {
         todo!()
@@ -87,12 +89,15 @@ impl TryFrom<SegmentIter> for Segment{
 
 impl SegmentIter {
     fn new(start: u64, remain: Option<NonZeroU64>, step: NonZeroU64) -> Self {
-        Self { step, remain, start }
+        Self {
+            step,
+            remain,
+            start,
+        }
     }
 
     // fn end(&self)
 }
-
 
 #[derive(Debug)]
 struct FromSegmentIterError;
@@ -102,4 +107,4 @@ impl Display for FromSegmentIterError {
         f.write_str("无法转换已耗尽迭代器")
     }
 }
-impl Error for FromSegmentIterError{}
+impl Error for FromSegmentIterError {}

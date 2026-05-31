@@ -1,9 +1,12 @@
 pub mod download_group;
 mod error;
+mod error_hander;
+mod error_strategy;
 pub mod family;
 pub mod group_impl;
+mod group_impl2;
 pub mod httprequest;
-mod marker;
+mod maybe_async;
 mod pwriter;
 pub mod segment;
 mod strategy;

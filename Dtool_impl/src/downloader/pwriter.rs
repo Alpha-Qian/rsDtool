@@ -4,7 +4,7 @@ use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut, Index, RangeBounds};
 use std::rc::Rc;
 use std::sync::Arc;
-// pub trait BufWriter {
+// pub trait PWriter {
 //     type Error: Error;
 //     async fn pwrite(&self, pos: u64, bytes: Bytes) -> Result<(), Self::Error>;
 // }

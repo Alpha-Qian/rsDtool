@@ -1,15 +1,13 @@
 
 use crate::downloader::{
     download_group::{
-        GroupExt, GroupGuard,
-    }, error::SubError, family::{RefCounted, ThreadModel}, httprequest::RequestInfo, segment::Segment,
+        GroupParts, GroupGuard,
+    }, error::SubError, family::ThreadModel, httprequest::RequestInfo, segment::Segment,
 };
 use bytes::Bytes;
-use futures::{future::select, io::Write};
-use futures::{Stream, TryStream, TryStreamExt};
-use futures::{
-    future::Either,
-};
+use futures::future::select;
+use futures::{Stream, TryStream};
+use futures::future::Either;
 use headers::{
     AcceptRanges, ContentRange, ETag, Header, HeaderMapExt, IfUnmodifiedSince, LastModified, Range,
 };
@@ -19,30 +17,11 @@ use reqwest::{
     header::{Entry, HeaderMap},
 };
 use std::{
-    cell::Cell, cmp::min, error::Error, fmt::Debug, marker::PhantomData, ops::{ControlFlow, RangeBounds}, pin, process::Output, sync::atomic::Ordering, time::Instant
+    cell::Cell, error::Error, fmt::Debug, marker::PhantomData, ops::RangeBounds, pin
 };
 use super::pwriter::BufWriter;
 
-///resume
-fn download_unchecked<S: DownloadStream, W: BufWriter>(info: RequestInfo, client: impl AsyncFn(RequestInfo) -> Result<S, SubError<S,W>>, pwriter: W) {
 
-}
-
-trait Strategy{
-
-}
-
-
-
-
-
-
-
-
-
-
-
-///
 async fn send_request(client: &Client, info: &RequestInfo) -> Result<Response, reqwest::Error> {
     let request = info.build_request();
     client.execute(request).await?.error_for_status()
@@ -98,14 +77,14 @@ fn new_downloader_unchecked<S: DownloadStream>(info: RequestInfo, client: impl A
 
 struct Ext<W, S>(PhantomData<(W, S)>);
 
-impl<W: BufWriter, S: DownloadStream,F: ThreadModel> GroupExt<F> for Ext<W, S> {
+impl<W: BufWriter, S: DownloadStream,F: ThreadModel> GroupParts<F> for Ext<W, S> {
     type GroupShare<'a> = GroupShareExt<W, F>;
     //GroupInlock
     type Data<'a> = ();
     type IdleData<'a> = Result<(), super::error::SubError<S, W>>;
     type BusyData<'a> = F::RefCounter<F::AtomicCell<bool>>;
 
-    type SlotInlock<'a> = SlotExt; //end
+    type SlotData<'a> = SlotExt; //end
     type SlotShare<'a> = SlotShareExt<F>; //remain
 }
 struct GroupShareExt<W: BufWriter, F: ThreadModel> {
@@ -383,88 +362,72 @@ async fn send_second_request(client: &Client, info: &RequestInfo) {
 
 
 
-///无需pin所以方便移动的下载上下文
-struct DownloadContext<'a, S, W> {
-    stream: S,
-    writer: &'a W,
-    remain_cache: i64,
-}
+// ///无需pin所以方便移动的下载上下文
+// struct DownloadContext<'a, S, W> {
+//     stream: S,
+//     writer: &'a W,
+//     remain_cache: i64,
+// }
 
-impl<'a, S, W> DownloadContext<'a, S, W> {
-    fn new(stream: S, writer: &'a W, last_remain: Option<i64>) -> Self {
-        let remain_cache = last_remain.unwrap_or(i64::MAX);
-        Self {
-            stream,
-            writer,
-            remain_cache,
-        }
-    }
+// impl<'a, S, W> DownloadContext<'a, S, W> {
+//     fn new(stream: S, writer: &'a W, last_remain: Option<i64>) -> Self {
+//         let remain_cache = last_remain.unwrap_or(i64::MAX);
+//         Self {
+//             stream,
+//             writer,
+//             remain_cache,
+//         }
+//     }
 
-    fn into_raw(self) -> (S, &'a W, i64) {
-        (self.stream, self.writer, self.remain_cache)
-    }
+//     fn into_raw(self) -> (S, &'a W, i64) {
+//         (self.stream, self.writer, self.remain_cache)
+//     }
 
-    fn into_stream(self) -> S {
-        self.stream
-    }
+//     fn into_stream(self) -> S {
+//         self.stream
+//     }
 
-    fn new_stream(&mut self, stream: S) {
-        self.stream = stream
-    }
+//     fn new_stream(&mut self, stream: S) {
+//         self.stream = stream
+//     }
 
-}
+// }
 
-impl<'a, St, W> DownloadContext<'a, St, W>
-where
-    St: TryStream<Ok = Bytes> + Unpin,
-    W: BufWriter,
-{
-    async fn download(
-        &mut self,
-        mut process: u64,
-        remain: &impl Radium<Item = i64>,
-        abort_token: impl FnMut() -> bool,
-    ) -> Result<(), DownloadContextError<St::Error, W::Error, _>> {
-        while let Some(bytes) = self.stream.try_next().await.map_err(DownloadContextError::Stream)? {
-            let write_length = min(bytes.len(), self.remain_cache as usize);
-            let write_bytes = bytes.slice(..write_length);
+// impl<'a, St, W> DownloadContext<'a, St, W>
+// where
+//     St: TryStream<Ok = Bytes> + Unpin,
+//     W: BufWriter,
+// {
+//     async fn download(
+//         &mut self,
+//         mut process: u64,
+//         remain: &impl Radium<Item = i64>,
+//         abort_token: impl FnMut() -> bool,
+//     ) -> Result<(), DownloadContextError<St::Error, W::Error, _>> {
+//         while let Some(bytes) = self.stream.try_next().await.map_err(DownloadContextError::Stream)? {
+//             let write_length = min(bytes.len(), self.remain_cache as usize);
+//             let write_bytes = bytes.slice(..write_length);
 
-            self.writer
-                .pwrite(process, write_bytes)
-                .await
-                .map_err(DownloadContextError::Write);
-            self.remain_cache = remain.fetch_sub(write_length as i64, Ordering::Release);
-            process += write_length as u64;
+//             self.writer
+//                 .pwrite(process, write_bytes)
+//                 .await
+//                 .map_err(DownloadContextError::Write);
+//             self.remain_cache = remain.fetch_sub(write_length as i64, Ordering::Release);
+//             process += write_length as u64;
 
-            if self.remain_cache <= 0 {
-                break;
-            }
+//             if self.remain_cache <= 0 {
+//                 break;
+//             }
 
-            if abort_token() {
-                return Err(DownloadContextError::Cancelled);
-            }
-        }
-        Ok(())
-    }
+//             if abort_token() {
+//                 return Err(DownloadContextError::Cancelled);
+//             }
+//         }
+//         Ok(())
+//     }
 
 
-}
-
-fn check_if_return_early<F: ThreadModel>(
-    bytes: Bytes,
-    writed: &mut usize,
-    remain: &F::AtomicCell<i64>,
-) -> Option<Bytes> {
-    let remain = remain.fetch_sub(*writed as i64, Ordering::Release);
-    if remain > 0 {
-        let data_len = bytes.len();
-        let write_len = min(remain as usize, data_len);
-        Some(bytes.slice(..write_len))
-    } else {
-        None
-    }
-}
-
+// }
 
 
 trait DownloadClient{

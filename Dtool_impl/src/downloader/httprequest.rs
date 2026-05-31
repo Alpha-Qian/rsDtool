@@ -1,10 +1,5 @@
-use std::ops::RangeBounds;
-
-use headers::{ContentRange, ETag, Header, HeaderMapExt, IfMatch, Range};
-use reqwest::{
-    Client, Method, Request, Response, Url, Version,
-    header::{self, Entry, HeaderMap},
-};
+use headers::{ETag, Header, HeaderMapExt, IfMatch, Range};
+use reqwest::{Method, Request, Url, Version, header::HeaderMap};
 
 ///作为crate的公共api
 #[derive(Clone, Debug)]
