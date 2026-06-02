@@ -55,28 +55,32 @@ where
 //     type Target = ;
 // }
 
+#[repr(transparent)]
 struct ReporterGuard<'t, 'a, F, P>(&'t Reporter<'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
 
 // -----------Busy and Idle struct  -------------------
-
+#[repr(transparent)]
 struct BusyGroup<'t, 'a, F, P>(GroupGuard<'t, 'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
 
+#[repr(transparent)]
 struct IdleGroup<'t, 'a, F, P>(GroupGuard<'t, 'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
 
+#[repr(transparent)]
 struct BusyReporter<'t, 'a, F, P>(ReporterGuard<'t, 'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
 
+#[repr(transparent)]
 struct IdleReporter<'t, 'a, F, P>(ReporterGuard<'t, 'a, F, P>)
 where
     F: ThreadModel,
@@ -293,6 +297,20 @@ where
     pub unsafe fn new_unchecked(guard: ReporterGuard<'t, 'a, F, P>) -> Self {
         Self(guard)
     }
+
+    pub fn slots(&self) -> &SlotVec<'a, F, P> {
+        todo!()
+    }
+    pub fn slots_mut(&mut self) -> &mut SlotVec<'a, F, P> {
+        todo!()
+    }
+
+    pub fn busy_data(&self) -> &P::BusyData<'a> {
+        todo!()
+    }
+    pub fn busy_data_mut(&mut self) -> &mut P::BusyData<'a> {
+        todo!()
+    }
 }
 
 impl<'t, 'a, F, P> IdleReporter<'t, 'a, F, P>
@@ -302,6 +320,13 @@ where
 {
     pub unsafe fn new_unchecked(guard: ReporterGuard<'t, 'a, F, P>) -> Self {
         Self(guard)
+    }
+
+    pub fn idle_data(&self) -> &P::IdleData<'a> {
+        todo!()
+    }
+    pub fn idle_data_mut(&mut self) -> &mut P::IdleData<'a> {
+        todo!()
     }
 }
 
