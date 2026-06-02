@@ -5,7 +5,7 @@ use std::
 };
 
 use crate::downloader::{
-    download_group::{BusyGroup, DownloadGroup, GroupParts, IdleSlot, Reporter, ReporterBusy, ReporterGuard, Slot, SlotShare}, error::{Aborted, SubError, SuperError}, family::ThreadModel, group_impl::DownloadStream, httprequest::RequestInfo, pwriter::BufWriter, segment::{self, Segment}
+    download_group::{BusyGroup, DownloadGroup, GroupParts, IdleSlot, Reporter, ReporterBusy, ReporterGuard, Slot, SlotShare, State}, error::{Aborted, SubError, SuperError}, family::ThreadModel, group_impl::DownloadStream, httprequest::RequestInfo, pwriter::BufWriter, segment::{self, Segment}
 };
 
 struct AsyncParts;
@@ -58,7 +58,10 @@ struct SlotShareData<F: ThreadModel>{
 
 
 
-impl<'a, F: ThreadModel> DownloadGroup<'a, F, AsyncParts> {
+impl<'a, F> DownloadGroup<'a, F, AsyncParts>
+where
+    F: ThreadModel
+{
     async fn async_with<T, A>(info: RequestInfo, f: A ) -> T
     where
         A: AsyncFnOnce(&mut Self) -> T
@@ -87,9 +90,15 @@ impl<'a, F: ThreadModel> DownloadGroup<'a, F, AsyncParts> {
 
 
     async fn join_all(&mut self) -> Result<(), SuperError<impl DownloadStream, impl BufWriter>> {
-        //get lock
-        //
+        loop {
+            let guard = self.lock();
+            match guard.state_data() {
+                State::Idle(s) => return s.data,
+                State::Busy(s) => {
 
+                }
+            }
+        }
     }
 
 
@@ -97,7 +106,10 @@ impl<'a, F: ThreadModel> DownloadGroup<'a, F, AsyncParts> {
 
 }
 
-impl<'a, F:ThreadModel> Reporter<'a, F, AsyncParts> {
+impl<'a, F> Reporter<'a, F, AsyncParts>
+where
+    F: ThreadModel
+{
     async fn execute<A, S, W>(&self, f: A) -> Result<T, SuperError<S, W>>
     where
         A: AsyncFnOnce(&Self) -> Result<Result<T, SuperError<S, W>, Aborted>>,
@@ -109,7 +121,10 @@ impl<'a, F:ThreadModel> Reporter<'a, F, AsyncParts> {
     }
 }
 
-impl<'a, F: ThreadModel> ReporterGuard<'a, F, AsyncParts> {
+impl<'a, F> ReporterGuard<'a, F, AsyncParts>
+where
+    F: ThreadModel
+{
 
     //仅在非abort退出
     fn super_done(&mut self, idle_data: ()) {
@@ -162,7 +177,10 @@ impl<'a, F: ThreadModel> ReporterGuard<'a, F, AsyncParts> {
 }
 
 
-impl<'a, F: ThreadModel> ReporterBusy<'a, F, AsyncParts> {
+impl<'a, F> ReporterBusy<'a, F, AsyncParts>
+where
+    F: ThreadModel
+{
 
     fn new_segment(&mut self, segment: Segment) -> Reporter<'a, F, AsyncParts> {
         let (start, remain) = segment.into_raw();
@@ -200,20 +218,7 @@ where
         self.new_reporter(slot_ext, slot_inlock)
     }
 
-    ///
-    fn load_segments<I>(&mut self, segment_iter: I) -> LoadSegments<'_, 'a, I::IntoIter, F>
-    where
-        I: IntoIterator<Item = Segment>
-    {
-        let iter = segment_iter.into_iter();
-
-        let size_hit = self.slots().0.iter().size_hint();
-        self.slots_mut().0.reserve(size_hit.0);
-        LoadSegments::new(self, segments)
-    }
-
-
-    fn load_segments2<I>(&mut self, segment_iter: I) -> impl Iterator<Item = Reporter<'a, F, AsyncParts>>
+    fn extend_from_iter<I>(&mut self, segment_iter: I) -> impl Iterator<Item = Reporter<'a, F, AsyncParts>>
     where
         I: IntoIterator<Item = Segment>
     {
@@ -226,49 +231,6 @@ where
         })
     }
 }
-
-
-
-
-struct LoadSegments<'a, 'b, I, F: ThreadModel>{
-    busy: &'a mut BusyGroup<'b, F, AsyncParts>,
-    segments: I
-}
-
-impl<'a, 'b, I, F> LoadSegments<'a, 'b, I, F>
-where
-    I: Iterator<Item = Segment>,
-    F: ThreadModel,
-{
-    fn new(busy: &'a mut BusyGroup<'b, F, E>, segments: I) -> Self {
-        Self { busy, segments }
-    }
-
-    fn test(busy: &'a mut BusyGroup<'b, F, E>, iter: T) -> Self
-    where
-        T: IntoIterator<IntoIter = I>
-    {
-        Self::new(busy, iter.into_iter())
-    }
-}
-
-impl<'a, 'b, I, F> Iterator for LoadSegments<'a,'b, I, F>
-where
-    F: ThreadModel,
-    I: Iterator<Item = Segment>,
-{
-
-    type Item = Reporter<'a, F, E>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let segment = self.segments.next()?;
-        Some(self.busy.new_segment(segment))
-    }
-}
-
-
-
-
 
 impl<'a, F> Slot<'a, F, AsyncParts> {
     unsafe fn from_semgent(segment: Segment, index: usize) -> Self {

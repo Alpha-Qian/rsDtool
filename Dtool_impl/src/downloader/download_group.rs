@@ -42,19 +42,6 @@ where
     F: ThreadModel,
     P: GroupParts<F>;
 
-// struct GroupGuardOwn<'a, F, P>(DownloadGroup<'a, F, P>)
-// where
-//     F: ThreadModel,
-//     P: GroupParts;
-
-// impl<'a, F, P> Deref for GroupGuardOwn<'a, F, P>
-// where
-//     F: ThreadModel,
-//     P: GroupParts<F>,
-// {
-//     type Target = ;
-// }
-
 #[repr(transparent)]
 struct ReporterGuard<'t, 'a, F, P>(&'t Reporter<'a, F, P>)
 where
@@ -177,7 +164,7 @@ where
     F: ThreadModel,
     P: GroupParts<F>,
 {
-    unsafe fn new_unchecked(group: &'t DownloadGroup<'a, F, E>) -> Self {
+    unsafe fn new_unchecked(group: &'t DownloadGroup<'a, F, P>) -> Self {
         Self(group)
     }
 
@@ -490,12 +477,16 @@ impl<'a, F: ThreadModel, E: GroupParts<F>> GroupShared<'a, F, E> {
 }
 type RefGroupShared<'a, F: ThreadModel, E: GroupParts<F>> = F::RefCounter<GroupShared<'a, F, E>>;
 
-type GroupGuardState<'a, F: ThreadModel, E: GroupParts<F>> =
-    State<BusyGroup<'a, F, E>, IdleGroup<'a, F, E>>;
-type ReporterGuardState<'a, F: ThreadModel, E: GroupParts<F>> =
-    State<ReporterBusy<'a, F, E>, ReporterIdle<'a, F, E>>;
+// type GroupGuardState<'a, F: ThreadModel, E: GroupParts<F>> =
+//     State<BusyGroup<'a, F, E>, IdleGroup<'a, F, E>>;
+// type ReporterGuardState<'a, F: ThreadModel, E: GroupParts<F>> =
+//     State<ReporterBusy<'a, F, E>, ReporterIdle<'a, F, E>>;
 
-struct InLockShared<'a, F: ThreadModel, E: GroupParts<F>> {
+struct InLockShared<'a, F, E>
+where
+    F: ThreadModel,
+    E: GroupParts<F>,
+{
     data: E::Data<'a>,
     state: State<BusySlot<'a, F, E>, IdleSlot<'a, F, E>>,
 }
@@ -719,72 +710,6 @@ where
         slots.push_slot(slot);
         Reporter::from_raw((*group).clone(), share2)
     }
-}
-
-struct GroupGuardNew<'a, 'b, F, E>(&'a DownloadGroup<'b, F, E>)
-where
-    F: ThreadModel,
-    E: GroupParts<F>;
-
-impl<'a, 'b, F, E> GroupGuardNew<'a, 'b, F, E>
-where
-    F: ThreadModel,
-    E: GroupParts<F>,
-{
-    fn new(unlocked: &'a DownloadGroup<'b, F, E>) -> Self {
-        unlocked.0.mutex.acquire();
-        Self(unlocked)
-    }
-
-    unsafe fn new_unchecked(unlocked: &'a DownloadGroup<'b, F, E>) -> Self {
-        Self(unlocked)
-    }
-}
-
-impl<'a, 'b, F, E> Drop for GroupGuardNew<'a, 'b, F, E>
-where
-    F: ThreadModel,
-    E: GroupParts<F>,
-{
-    fn drop(&mut self) {
-        self.0.0.mutex.release();
-    }
-}
-
-struct BusyGroupNew<'a, 'b, F, E>(GroupGuardNew<'a, 'b, F, E>)
-where
-    F: ThreadModel,
-    E: GroupParts<F>;
-
-impl<'a, 'b, F, E> BusyGroupNew<'a, 'b, F, E>
-where
-    F: ThreadModel,
-    E: GroupParts<F>,
-{
-    pub unsafe fn new_unchecked(guard: GroupGuardNew<'a, 'b, F, E>) -> Self {
-        Self(guard)
-    }
-}
-
-struct IdleGroupNew<'a, 'b, F, E>(GroupGuardNew<'a, 'b, F, E>)
-where
-    F: ThreadModel,
-    E: GroupParts<F>;
-
-impl<'a, 'b, F, E> IdleGroupNew<'a, 'b, F, E>
-where
-    F: ThreadModel,
-    E: GroupParts<F>,
-{
-    pub unsafe fn new_unchecked(guard: GroupGuardNew<'a, 'b, F, E>) -> Self {
-        Self(guard)
-    }
-}
-
-///向上转型，获取父类
-trait UpCast<Super> {
-    fn upcast(&self) -> &Super;
-    fn upcast_mut(&mut self) -> &mut Super;
 }
 
 ///唤醒机制
