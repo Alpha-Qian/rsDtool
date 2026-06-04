@@ -37,38 +37,38 @@ where
 
 //------------------------Guard struct----------------------------
 
-struct GroupGuard<'t, 'a, F, P>(&'t DownloadGroup<'a, F, P>)
+pub struct GroupGuard<'t, 'a, F, P>(&'t DownloadGroup<'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
 
 #[repr(transparent)]
-struct ReporterGuard<'t, 'a, F, P>(&'t Reporter<'a, F, P>)
+pub struct ReporterGuard<'t, 'a, F, P>(&'t Reporter<'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
 
 // -----------Busy and Idle struct  -------------------
 #[repr(transparent)]
-struct BusyGroup<'t, 'a, F, P>(GroupGuard<'t, 'a, F, P>)
+pub struct BusyGroup<'t, 'a, F, P>(GroupGuard<'t, 'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
 
 #[repr(transparent)]
-struct IdleGroup<'t, 'a, F, P>(GroupGuard<'t, 'a, F, P>)
+pub struct IdleGroup<'t, 'a, F, P>(GroupGuard<'t, 'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
 
 #[repr(transparent)]
-struct BusyReporter<'t, 'a, F, P>(ReporterGuard<'t, 'a, F, P>)
+pub struct BusyReporter<'t, 'a, F, P>(ReporterGuard<'t, 'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
 
 #[repr(transparent)]
-struct IdleReporter<'t, 'a, F, P>(ReporterGuard<'t, 'a, F, P>)
+pub struct IdleReporter<'t, 'a, F, P>(ReporterGuard<'t, 'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
@@ -154,7 +154,7 @@ where
     }
 
     ///slot ext
-    pub fn slot_ext(&self) -> &P::SlotShare<'a> {
+    pub fn slot_share(&self) -> &P::SlotShare<'a> {
         &self.slot_share.ext
     }
 }
@@ -274,6 +274,15 @@ where
     pub fn idle_data_mut(&mut self) -> &mut P::IdleData<'a> {
         todo!()
     }
+
+    pub unsafe fn into_busy(
+        self,
+        busy_data: P::BusyData<'a>,
+        //slots: SlotVec<'a, F, P>,
+    ) -> BusyGroup<'t, 'a, F, P> {
+        // *self.0.state_data_mut() = State::Busy(BS)
+        todo!()
+    }
 }
 
 impl<'t, 'a, F, P> BusyReporter<'t, 'a, F, P>
@@ -296,6 +305,14 @@ where
         todo!()
     }
     pub fn busy_data_mut(&mut self) -> &mut P::BusyData<'a> {
+        todo!()
+    }
+
+    pub fn my_slot_data(&self) -> &P::SlotData<'a> {
+        todo!()
+    }
+
+    pub fn my_slot_data_mut(&mut self) -> &mut P::SlotData<'a> {
         todo!()
     }
 }
@@ -619,6 +636,22 @@ where
 
     pub data: E::SlotData<'a>,
 }
+
+// impl<'a, F, E> Slot<'a, F, E>
+// where
+//     F: ThreadModel,
+//     E: GroupParts<F>,
+// {
+//     pub unsafe fn new(index: usize, data: E::SlotData<'a>, share: E::SlotShare<'a>) -> Self {
+//         Self {
+//             share: F::RefCounter::new(SlotShare {
+//                 index: SyncUnsafeCell(index),
+//                 ext: share,
+//             }),
+//             data,
+//         }
+//     }
+// }
 
 pub struct SlotShare<'a, F, E>
 where

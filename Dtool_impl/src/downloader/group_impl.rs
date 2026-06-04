@@ -81,8 +81,8 @@ impl<W: BufWriter, S: DownloadStream,F: ThreadModel> GroupParts<F> for Ext<W, S>
     type GroupShare<'a> = GroupShareExt<W, F>;
     //GroupInlock
     type Data<'a> = ();
-    type IdleData<'a> = Result<(), super::error::SubError<S, W>>;
-    type BusyData<'a> = F::RefCounter<F::AtomicCell<bool>>;
+    type Result<'a> = Result<(), super::error::SubError<S, W>>;
+    type Waker<'a> = F::RefCounter<F::AtomicCell<bool>>;
 
     type SlotData<'a> = SlotExt; //end
     type SlotShare<'a> = SlotShareExt<F>; //remain
