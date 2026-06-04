@@ -8,7 +8,7 @@ use radium::Radium;
 use tokio::sync::mpsc::OwnedPermit;
 
 use crate::downloader::{
-    download_group::{BusyGroup, BusyReporter, DownloadGroup, GroupGuard, GroupParts, IdleGroup, IdleSlot, Reporter, ReporterBusy, ReporterGuard, Slot, SlotShare, State}, error::{Aborted, SubError, SuperError}, family::ThreadModel, group_impl::DownloadStream, httprequest::RequestInfo, pwriter::BufWriter, segment::{self, Segment}
+    download_group::{BusyGroup, BusyReporter, DownloadGroup, GroupGuard, GroupParts, IdleGroup, IdleSlot, Reporter, ReporterBusy, ReporterGuard, Slot, SlotShare, State}, error::{self, Aborted, RawError, SuperError}, family::ThreadModel, group_impl::DownloadStream, httprequest::RequestInfo, pwriter::BufWriter, segment::{self, Segment}
 };
 
 struct AsyncParts;
@@ -48,7 +48,7 @@ struct SlotShareData<F: ThreadModel>{
 }
 
 
-
+//构建器
 struct Builder<I>{
     info: Option<RequestInfo>,
     segments: Option<I>,
@@ -70,7 +70,7 @@ impl<F> DownloadGroup<'static, F, AsyncParts>
 where
     F: ThreadModel
 {
-
+    ///模拟python的上下文协议
     async fn async_with<T, A>(info: RequestInfo, f: A ) -> T
     where
         A: AsyncFnOnce(&mut Self) -> T
@@ -207,25 +207,41 @@ where
     }
 }
 
-impl<F> Reporter<'static, F, AsyncParts>
+impl<M> Reporter<'static, M, AsyncParts>
 where
-    F: ThreadModel,
+    M: ThreadModel,
 {
-    async fn execute<A, S, W>(&self, f: A) -> Result<T, SuperError<S, W>>
+    // async fn execute<A, S, W>(&self, f: A) -> Result<T, SuperError<S, W>>
+    // where
+    //     A: AsyncFnOnce(&Self) -> Result<Result<T, SuperError<S, W>, Aborted>>,
+    //     S: DownloadStream,
+    //     W: BufWriter,
+    // {
+    //     let Ok(reuslt) = f(self).await else {
+    //         //aborted
+    //         //啥都不干
+    //     };
+
+    // }
+
+    async fn execute<F, S, W>(&self, task: F)
     where
-        A: AsyncFnOnce(&Self) -> Result<Result<T, SuperError<S, W>, Aborted>>,
+        F: AsyncFnMut(<AsyncParts as GroupParts<M>>::GroupShare, <AsyncParts as GroupParts<M>>::SlotShare) -> Result<Result<(), RawError<S, W>>>,
         S: DownloadStream,
         W: BufWriter,
     {
-        let Ok(reuslt) = f(self).await else {
-            //aborted
-            //啥都不干
-        };
-
     }
 
 
-
+    fn handle_result<S, W>(self, result: Result<Result<(), SuperError<S, W>>, Aborted>) -> DownloadGroup<'a, M, P> {
+        match result {
+            //成功完成
+            Ok(Ok(())) => todo!("移除my_slots"),
+            //出现不可重试错误
+            Ok(Err(e)) => todo!("执行所有线程的数据清理"),
+            //因为其他协程出现不可重试错误而被取消
+            Err(_aborted) => todo!("直接退出")
+        }
     }
 }
 
@@ -277,11 +293,6 @@ where
             Err(_) => self.abort_exit(),
         }
     }
-
-    ///异步轮询式执行，只在没主动让出时间中止
-    async fn execute_unabortable(&mut self, f: impl AsyncFnMut(&mut Self) -> ControlFlow<Result<(), >>) {
-
-    }
 }
 
 
@@ -324,6 +335,13 @@ trait Strategy<E: GroupParts<F>, F: ThreadModel>{
     //TODO
 
     //fn on_report_unlock(share: &mut E::)
+    fn inspect_response(response)
+
+    fn pro_handle_error(error: &RawError<S, W>) -> Option<impl FnOnce(RawError<S, W>) -> SuperError<S, W>> {
+        None
+    }
+
+    fn div_slots(slots: &mut Vec<Slot<'a, F, P>>) -> (E::SlotData<'a>, E::SlotShare<'a>);
 }
 
 
@@ -371,3 +389,14 @@ fn clone_waker() -> impl Future<Output = Waker> {
 // }
 
 // impl
+
+
+async fn download_normal<F: ThreadModel>(
+    group: <AsyncParts as GroupParts<F>>::GroupShare,
+    slot: <AsyncParts as GroupParts<F>>::SlotShare,
+    end: usize,
+) -> Result<Result<(), RawError<S, W>>>
+{
+    let info = group.info.clone();
+    let
+}

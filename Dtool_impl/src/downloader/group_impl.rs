@@ -2,7 +2,7 @@
 use crate::downloader::{
     download_group::{
         GroupParts, GroupGuard,
-    }, error::SubError, family::ThreadModel, httprequest::RequestInfo, segment::Segment,
+    }, error::RawError, family::ThreadModel, httprequest::RequestInfo, segment::Segment,
 };
 use bytes::Bytes;
 use futures::future::select;
@@ -81,7 +81,7 @@ impl<W: BufWriter, S: DownloadStream,F: ThreadModel> GroupParts<F> for Ext<W, S>
     type GroupShare<'a> = GroupShareExt<W, F>;
     //GroupInlock
     type Data<'a> = ();
-    type Result<'a> = Result<(), super::error::SubError<S, W>>;
+    type Result<'a> = Result<(), super::error::RawError<S, W>>;
     type Waker<'a> = F::RefCounter<F::AtomicCell<bool>>;
 
     type SlotData<'a> = SlotExt; //end
@@ -245,7 +245,7 @@ fn set_file_version(info: &mut HeaderMap, response: &HeaderMap) -> bool {
 }
 
 
-pub async fn response_builder<S: DownloadStream, W: BufWriter>(client: &Client, info: &RequestInfo) -> Result<Response, SubError<S, W>> {
+pub async fn response_builder<S: DownloadStream, W: BufWriter>(client: &Client, info: &RequestInfo) -> Result<Response, RawError<S, W>> {
     let response = match client.execute(info.build_request()).await {
         Ok(r) => r,
         Err(e) if e.

@@ -77,7 +77,7 @@ impl Display for SubDownloadError {
 
 impl Error for SubDownloadError {}
 
-pub enum SubError<S, W>
+pub enum RawError<S, W>
 where
     S: DownloadStream,
     W: BufWriter,
@@ -89,7 +89,7 @@ where
     Download(DownloaderError),
 }
 
-impl<S, W> SubError<S, W>
+impl<S, W> RawError<S, W>
 where
     S: DownloadStream,
     W: BufWriter,
@@ -103,7 +103,7 @@ where
     }
 }
 
-impl<S, W> From<SubDownloadError> for SubError<S, W>
+impl<S, W> From<SubDownloadError> for RawError<S, W>
 where
     S: DownloadStream,
     W: BufWriter,
@@ -113,7 +113,7 @@ where
     }
 }
 
-impl<S, W> Debug for SubError<S, W>
+impl<S, W> Debug for RawError<S, W>
 where
     S: DownloadStream,
     W: BufWriter,
@@ -128,7 +128,7 @@ where
     }
 }
 
-impl<S, W> Display for SubError<S, W>
+impl<S, W> Display for RawError<S, W>
 where
     S: DownloadStream,
     W: BufWriter,
@@ -143,7 +143,7 @@ where
     }
 }
 
-impl<S, W, R> Error for SubError<S, W>
+impl<S, W, R> Error for RawError<S, W>
 where
     S: DownloadStream,
     W: BufWriter,
@@ -366,7 +366,7 @@ impl<T: Error + 'static> Error for RawNetWorkError<T> {
     }
 }
 
-impl<S, W> From<RawNetWorkError<S::Error>> for SubError<S, W>
+impl<S, W> From<RawNetWorkError<S::Error>> for RawError<S, W>
 where
     S: DownloadStream,
     W: BufWriter,
@@ -415,7 +415,7 @@ impl<T> From<T> for IntoNetWorkError<T> {
     }
 }
 
-impl<S, W> From<IntoNetWorkError<S::Error>> for SubError<S, W>
+impl<S, W> From<IntoNetWorkError<S::Error>> for RawError<S, W>
 where
     S: DownloadStream,
     W: BufWriter,
@@ -446,7 +446,7 @@ impl<T> From<T> for IntoWriterError<T> {
     }
 }
 
-impl<S, W> From<IntoWriterError<W::Error>> for SubError<S, W>
+impl<S, W> From<IntoWriterError<W::Error>> for RawError<S, W>
 where
     S: DownloadStream,
     W: BufWriter,
