@@ -4,7 +4,9 @@ use std::
     future::poll_fn, io::IsTerminal, ops::{ControlFlow, Deref}, result, sync::atomic::Ordering, task::{Poll, Waker}
 };
 
+use futures::Stream;
 use radium::Radium;
+use reqwest::blocking::Response;
 use tokio::sync::mpsc::OwnedPermit;
 
 use crate::downloader::{

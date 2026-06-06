@@ -1,4 +1,4 @@
-use futures::TryStreamExt;
+use futures::{Stream, TryStreamExt};
 use radium::Radium;
 use std::ops::{Deref, Sub};
 use std::result;
@@ -257,7 +257,9 @@ where
     //     self.remai
     // }
 
-    pub async fn fetch_stream<S>(mut self, mut stream: S) -> Result<(), SubError<S, W>>
+    //pub async fn fetch_stream_optional<S>(mut self)
+
+    pub async fn fetch_stream<S>(&mut self, mut stream: S) -> Result<(), SubError<S, W>>
     where
         S: DownloadStream,
         SubError<S, W>: From<S::Error>,
