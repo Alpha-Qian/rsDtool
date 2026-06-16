@@ -82,11 +82,7 @@ where
     F: ThreadModel,
     P: GroupParts<F>,
 {
-    pub fn new_idle(
-        group: P::GroupShare<'a>,
-        data: P::Data<'a>,
-        idle_data: P::IdleData<'a>,
-    ) -> Self {
+    pub fn new_idle(group: P::GroupShare<'a>, data: P::Data<'a>, idle_data: P::Result<'a>) -> Self {
         let in_lock_shared = InLockShared {
             data,
             state: State::Idle(IdleSlot { data: idle_data }),
@@ -101,7 +97,7 @@ where
     pub(crate) fn new_busy(
         group: P::GroupShare<'a>,
         data: P::Data<'a>,
-        busy_data: P::BusyData<'a>,
+        busy_data: P::Waker<'a>,
         waker: P::Waker<'a>,
     ) -> Self {
         let in_lock_shared = InLockShared {
@@ -109,7 +105,6 @@ where
             state: State::Busy(BusySlot {
                 slots: SlotVec::new(),
                 data: busy_data,
-                waker,
             }),
         };
 
@@ -154,7 +149,7 @@ where
     }
 
     ///slot ext
-    pub fn slot_share(&self) -> &P::SlotShare<'a> {
+    pub fn slot(&self) -> &P::SlotShare<'a> {
         &self.slot_share.ext
     }
 }
@@ -207,12 +202,16 @@ where
         unsafe { &mut (*self.0.group.locked.get()).state }
     }
 
-    fn state(self) -> State<BusyReporter<'t, 'a, F, P>, IdleReporter<'t, 'a, F, P>> {
+    pub fn state(self) -> State<BusyReporter<'t, 'a, F, P>, IdleReporter<'t, 'a, F, P>> {
         let state = unsafe { &(*self.0.group.locked.get()).state };
         match state {
             State::Busy(_) => State::Busy(BusyReporter(self)),
             State::Idle(_) => State::Idle(IdleReporter(self)),
         }
+    }
+
+    fn raw(&self) -> &Reporter<'a, F, P> {
+        self.0
     }
 }
 
@@ -251,10 +250,10 @@ where
         todo!()
     }
 
-    pub fn busy_data(&self) -> &P::BusyData<'a> {
+    pub fn busy_data(&self) -> &P::Waker<'a> {
         todo!()
     }
-    pub fn busy_data_mut(&self) -> &mut P::BusyData<'a> {
+    pub fn busy_data_mut(&self) -> &mut P::Waker<'a> {
         todo!()
     }
 }
@@ -268,18 +267,17 @@ where
         Self(guard)
     }
 
-    pub fn idle_data(&self) -> &P::IdleData<'a> {
+    pub fn idle_data(&self) -> &P::Result<'a> {
         todo!()
     }
-    pub fn idle_data_mut(&mut self) -> &mut P::IdleData<'a> {
+    pub fn idle_data_mut(&mut self) -> &mut P::Result<'a> {
         todo!()
     }
 
     pub unsafe fn into_busy(
         self,
-        busy_data: P::BusyData<'a>,
-        //slots: SlotVec<'a, F, P>,
-    ) -> BusyGroup<'t, 'a, F, P> {
+        busy_data: P::Waker<'a>, //slots: SlotVec<'a, F, P>,
+    ) -> (BusyGroup<'t, 'a, F, P>, P::Result<'a>) {
         // *self.0.state_data_mut() = State::Busy(BS)
         todo!()
     }
@@ -301,10 +299,10 @@ where
         todo!()
     }
 
-    pub fn busy_data(&self) -> &P::BusyData<'a> {
+    pub fn busy_data(&self) -> &P::Waker<'a> {
         todo!()
     }
-    pub fn busy_data_mut(&mut self) -> &mut P::BusyData<'a> {
+    pub fn busy_data_mut(&mut self) -> &mut P::Waker<'a> {
         todo!()
     }
 
@@ -326,10 +324,10 @@ where
         Self(guard)
     }
 
-    pub fn idle_data(&self) -> &P::IdleData<'a> {
+    pub fn idle_data(&self) -> &P::Result<'a> {
         todo!()
     }
-    pub fn idle_data_mut(&mut self) -> &mut P::IdleData<'a> {
+    pub fn idle_data_mut(&mut self) -> &mut P::Result<'a> {
         todo!()
     }
 }
@@ -572,8 +570,7 @@ where
     E: GroupParts<F>,
 {
     slots: SlotVec<'a, F, E>,
-    data: E::BusyData<'a>,
-    waker: E::Waker<'a>,
+    data: E::Waker<'a>,
 }
 
 impl<'a, F, E> BusySlot<'a, F, E>
@@ -581,17 +578,16 @@ where
     F: ThreadModel,
     E: GroupParts<F>,
 {
-    pub fn empty(data: E::BusyData<'a>, waker: E::Waker<'a>) -> Self {
+    pub fn empty(data: E::Waker<'a>, waker: E::Waker<'a>) -> Self {
         Self {
             slots: SlotVec(Vec::new()),
             data,
-            waker,
         }
     }
 
     pub unsafe fn with_raw(
         slots: SlotVec<'a, F, E>,
-        data: E::BusyData<'a>,
+        data: E::Waker<'a>,
         waker: E::Waker<'a>,
     ) -> Self {
         Self { slots, data, waker }
@@ -604,24 +600,25 @@ where
         &mut self.slots
     }
 
-    pub fn data(&self) -> &E::BusyData<'a> {
+    pub fn data(&self) -> &E::Waker<'a> {
         &self.data
     }
-    pub fn data_mut(&mut self) -> &mut E::BusyData<'a> {
+    pub fn data_mut(&mut self) -> &mut E::Waker<'a> {
         &mut self.data
     }
 
-    pub fn into_raw(self) -> (SlotVec<'a, F, E>, E::BusyData<'a>, E::Waker<'a>) {
+    pub fn into_raw(self) -> (SlotVec<'a, F, E>, E::Waker<'a>, E::Waker<'a>) {
         (self.slots, self.data, self.waker)
     }
 }
 
-pub struct IdleSlot<'a, F, E>
+pub struct IdleSlot<'a, F, P>
 where
     F: ThreadModel,
-    E: GroupParts<F>,
+    P: GroupParts<F>,
 {
-    pub data: E::IdleData<'a>,
+    pub data: P::Result<'a>,
+    empty_vec: Vec<Slot<'a, F, P>>,
 }
 
 /// 内部存储项
@@ -693,14 +690,12 @@ pub trait GroupParts<F: ThreadModel> {
     //GroupInLock
     // 访问这四项需要解锁
     type Data<'a>;
-    type IdleData<'a>;
-    type BusyData<'a>;
+    type Result<'a>;
+    type Waker<'a>;
     type SlotData<'a>; //每个线程一份
 
     ///每个线程一份的只读数据
     type SlotShare<'a>;
-
-    type Waker<'a>: Wake;
 }
 
 ///标准库SyncUnsafeCell还未稳定
@@ -764,3 +759,50 @@ impl Wake for Waker {
         self.wake();
     }
 }
+
+///限制使用lock方法的api包装器
+#[derive(Debug, Clone, Copy)]
+struct ReporterRef<'t, 'a, F, P>(&'t Reporter<'a, F, P>)
+where
+    F: ThreadModel,
+    P: GroupParts<F>;
+
+impl<'t, 'a, F, P> ReporterRef<'t, 'a, F, P>
+where
+    F: ThreadModel,
+    P: GroupParts<F>,
+{
+    fn slot(self) -> &'t <P as GroupParts<F>>::SlotShare<'a> {
+        self.0.slot()
+    }
+
+    fn group(self) -> &'t <P as GroupParts<F>>::GroupShare<'a> {
+        self.0.group()
+    }
+}
+
+///限制使用lock方法的api包装器
+#[derive(Debug, Clone, Copy)]
+struct GroupRef<'t, 'a, F, P>(&'t DownloadGroup<'a, F, P>)
+where
+    F: ThreadModel,
+    P: GroupParts<F>;
+
+impl<'t, 'a, F, P> GroupRef<'t, 'a, F, P>
+where
+    F: ThreadModel,
+    P: GroupParts<F>,
+{
+    fn group(self) -> &'t <P as GroupParts<F>>::GroupShare<'a> {
+        self.0.share()
+    }
+}
+
+// struct SlotRef<'t, 'a, F, P>(&'t Slot<'a, F, P>)
+// where
+//     F: ThreadModel,
+//     P: GroupParts<F>;
+
+// impl  for  {
+
+// }

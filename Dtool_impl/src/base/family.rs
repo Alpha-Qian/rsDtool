@@ -8,8 +8,6 @@ use std::{
 use parking_lot::RawMutex;
 use radium::{Atom, Radium, marker::Atomic};
 
-//命名参考：https://aistudio.google.com/prompts/1kdVbB3yyDukhLxzDQZ6XTWpbUyWQ1eMg
-
 pub trait ThreadModel: 'static {
     type RefCounter<T>: RefCounted<Target = T>; //这个生命周期视乎就是默认的约束//要求SharePtr<T>必须活得和T一样久
 
@@ -43,7 +41,6 @@ pub type RefCounter<F: ThreadModel, T> = F::RefCounter<T>;
 pub type AtomicCell<F: ThreadModel, T> = F::AtomicCell<T>;
 pub type Mutex<F: ThreadModel> = F::Mutex;
 
-pub type SharedAtomic<F: ThreadModel, T> = F::RefCounter<F::AtomicCell<T>>;
 //  具体实现：
 
 //需要在多线程中运行：
@@ -104,5 +101,25 @@ unsafe impl Lockable for BorrowChecker {
     fn release(&self) {
         let p = &mut unsafe { *self.borrowed.get() };
         *p = false
+    }
+}
+
+struct MyRefCell(Cell<bool>);
+
+impl MyRefCell {
+    fn new() -> Self {
+        Self(Cell::new(false))
+    }
+
+    fn acqure(&self) {
+        let b = Cell::new(true);
+        self.0.swap(&b);
+        if b.get() {
+            panic!()
+        }
+    }
+
+    fn release(&self) {
+        self.0.set(false);
     }
 }

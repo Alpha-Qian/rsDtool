@@ -1,6 +1,6 @@
 //!持久化
 
-use crate::downloader::httprequest::RequestInfo;
+use crate::base::request_info::RequestInfo;
 use std::{
     error::Error,
     fmt::{Debug, Display},

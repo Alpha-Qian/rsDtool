@@ -1,5 +1,6 @@
+use super::download_stream::DownloadStream;
 use super::pwriter::BufWriter;
-use crate::downloader::group_impl::DownloadStream;
+use futures::stream::Aborted;
 use headers::{ContentRange, HeaderMapExt};
 use reqwest::{Response, StatusCode, header::HeaderMap};
 use std::{
@@ -51,32 +52,7 @@ use std::{
 // }
 //
 
-#[derive(Debug)]
-pub struct Aborted;
-
-impl Display for Aborted {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Aborted Error")
-    }
-}
-
-impl Error for Aborted {}
-
-#[derive(Debug)]
-pub enum SubDownloadError {
-    UnexceptedEOF,
-}
-
-impl Display for SubDownloadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::UnexceptedEOF => f.write_str("Unexcept Response EOF"),
-        }
-    }
-}
-
-impl Error for SubDownloadError {}
-
+///下载器产生的原始错误
 pub enum RawError<S, W>
 where
     S: DownloadStream,
@@ -86,6 +62,17 @@ where
     NetWork(S::Error, Option<RetrySuggest>),
 
     SubDownload(SubDownloadError),
+    Download(DownloaderError),
+}
+
+///下载组错误
+pub enum SuperError<R, S, W>
+where
+    S: DownloadStream,
+    W: BufWriter,
+{
+    Writer(W::Error),
+    NetWork(S::Error, Option<R>),
     Download(DownloaderError),
 }
 
@@ -158,18 +145,9 @@ where
     }
 }
 
-pub enum SuperError<S, W>
+impl<R, S, W> Debug for SuperError<R, S, W>
 where
-    S: DownloadStream,
-    W: BufWriter,
-{
-    Writer(W::Error),
-    Download(DownloaderError),
-    NetWork(R::Info, S::Error),
-}
-
-impl<S, R, W> Debug for SuperError<S, R, W>
-where
+    R: Debug,
     S: DownloadStream,
     W: BufWriter,
 {
@@ -182,7 +160,7 @@ where
     }
 }
 
-impl<S, W> Display for SuperError<S, W>
+impl<R, S, W> Display for SuperError<R, S, W>
 where
     S: DownloadStream,
     W: BufWriter,
@@ -196,8 +174,9 @@ where
     }
 }
 
-impl<S, W> Error for SuperError<S, W>
+impl<R, S, W> Error for SuperError<R, S, W>
 where
+    R: Debug,
     S: DownloadStream,
     W: BufWriter,
 {
@@ -210,24 +189,20 @@ where
     }
 }
 
-struct NetWorkError<T>
-where
-    T: DownloadStream,
-{
-    retry_info: R::Info,
-    error: T::Error,
+#[derive(Debug)]
+pub enum SubDownloadError {
+    UnexceptedEOF,
 }
 
-impl<T> Display for NetWorkError<T>
-where
-    T: DownloadStream,
-{
+impl Display for SubDownloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let retry_error = &self.retry_info;
-        let source = &self.error;
-        write!(f, "网络错误: {source:}， 重试错误：{retry_error:}")
+        match self {
+            Self::UnexceptedEOF => f.write_str("Unexcept Response EOF"),
+        }
     }
 }
+
+impl Error for SubDownloadError {}
 
 #[derive(Debug)]
 pub enum DownloaderError {
@@ -235,7 +210,7 @@ pub enum DownloaderError {
     ErrorSuccesStatus(StatusCode), //Sever should return Partical response, but didn't
     ErrorContentRange,             //sever return error range
     ErrorContentLength,            // sever return error length
-    BadResponse(&'static str),     //服务器似乎有遵守http(s)规范
+    BadResponse(&'static str),     //服务器似乎没有遵守http(s)规范
 }
 
 impl Display for DownloaderError {
@@ -264,35 +239,26 @@ impl DownloaderError {
         }
     }
 
-    fn check_partical_response(
-        status: StatusCode,
-        headers: &HeaderMap,
-        range_start: u64,
-    ) -> Result<(), Self> {
-        if status != StatusCode::PARTIAL_CONTENT {
-            return Err(Self::ErrorSuccesStatus(status));
-        };
-        let Some(v) = headers.typed_get::<ContentRange>() else {
-            return Self::BadResponse("返回206响应码但没有ContentRange响应头");
-        };
+    // fn check_partical_response(
+    //     status: StatusCode,
+    //     headers: &HeaderMap,
+    //     range_start: u64,
+    // ) -> Result<(), Self> {
+    //     if status != StatusCode::PARTIAL_CONTENT {
+    //         return Err(Self::ErrorSuccesStatus(status));
+    //     };
+    //     let Some(v) = headers.typed_get::<ContentRange>() else {
+    //         return Self::BadResponse("返回206响应码但没有ContentRange响应头");
+    //     };
 
-        if let (Some(range), Some(len)) = (v.bytes_range(), v.bytes_len()) {
-            if range.1 - range.0 + 1 != len {
-                return Self::BadResponse("()");
-            }
-        }
+    //     if let (Some(range), Some(len)) = (v.bytes_range(), v.bytes_len()) {
+    //         if range.1 - range.0 + 1 != len {
+    //             return Self::BadResponse("()");
+    //         }
+    //     }
 
-        Ok(())
-    }
-}
-
-enum BadResponse {}
-
-enum ErrorKind {
-    ClientError,
-    SeverError,
-    NetWorkError,
-    UnKonw,
+    //     Ok(())
+    // }
 }
 
 #[derive(Debug)]
@@ -326,22 +292,22 @@ impl Display for RetrySuggest {
 pub struct RawNetWorkError<T>(T);
 
 impl<T> RawNetWorkError<T> {
-    pub fn add_suggest(self, suggest: RetrySuggest) -> IntoNetWorkError<T> {
-        IntoNetWorkError {
+    pub fn add_suggest(self, suggest: RetrySuggest) -> IntoRawNetWorkError<T> {
+        IntoRawNetWorkError {
             error: self.0,
             suggest: Some(suggest),
         }
     }
 
-    pub fn none_suggest(self) -> IntoNetWorkError<T> {
-        IntoNetWorkError {
+    pub fn none_suggest(self) -> IntoRawNetWorkError<T> {
+        IntoRawNetWorkError {
             error: self.0,
             suggest: None,
         }
     }
 
-    pub fn into_network_error(self, suggest: Option<RetrySuggest>) -> IntoNetWorkError<T> {
-        IntoNetWorkError {
+    pub fn into_network_error(self, suggest: Option<RetrySuggest>) -> IntoRawNetWorkError<T> {
+        IntoRawNetWorkError {
             error: self.0,
             suggest,
         }
@@ -378,12 +344,12 @@ where
 
 ///防止重复impl 的new type包装器
 #[derive(Debug)]
-pub struct IntoNetWorkError<E> {
+pub struct IntoRawNetWorkError<E> {
     error: E,
     suggest: Option<RetrySuggest>,
 }
 
-impl<T> IntoNetWorkError<T> {
+impl<T> IntoRawNetWorkError<T> {
     fn new(error: T) -> Self {
         Self {
             error,
@@ -406,7 +372,7 @@ impl<T> IntoNetWorkError<T> {
     }
 }
 
-impl<T> From<T> for IntoNetWorkError<T> {
+impl<T> From<T> for IntoRawNetWorkError<T> {
     fn from(value: T) -> Self {
         Self {
             error: value,
@@ -415,23 +381,23 @@ impl<T> From<T> for IntoNetWorkError<T> {
     }
 }
 
-impl<S, W> From<IntoNetWorkError<S::Error>> for RawError<S, W>
+impl<S, W> From<IntoRawNetWorkError<S::Error>> for RawError<S, W>
 where
     S: DownloadStream,
     W: BufWriter,
 {
-    fn from(value: IntoNetWorkError<S::Error>) -> Self {
+    fn from(value: IntoRawNetWorkError<S::Error>) -> Self {
         Self::NetWork(value.error, None)
     }
 }
 
-impl<T> Display for IntoNetWorkError<T> {
+impl<T> Display for IntoRawNetWorkError<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("IntoNetWorkError")
     }
 }
 
-impl<T: Error + 'static> Error for IntoNetWorkError<T> {
+impl<T: Error + 'static> Error for IntoRawNetWorkError<T> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         Some(&self.error)
     }
@@ -467,3 +433,64 @@ impl<T: Error + 'static> Error for IntoWriterError<T> {
         Some(&self.0)
     }
 }
+
+pub struct Aborted;
+
+impl Display for Aborted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Aborted")
+    }
+}
+
+impl Error for Aborted {}
+
+type MayShouldRetry<T, E> = Result<T, E>;
+
+async fn handle_may_should_retry<T, E>(
+    f: impl AsyncFnMut() -> Result<MayShouldRetry<T, E>, E>,
+) -> Result<T, E> {
+    loop {
+        let r = f().await?;
+        match r {
+            Ok(t) => return Ok(t),
+            Err(e) => r,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct IntoRetryedError<T>(T);
+
+impl<T> Display for IntoRetryedError<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("IntoRetryedError")
+    }
+}
+
+impl<T: Error> Error for IntoRetryedError<T> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+trait RetryChecker<E> {
+    type RetryError;
+    fn check_retryable(error: &E) -> Option<impl FnOnce(E) -> Self::RetryError>;
+}
+
+pub type DownloadResult<T, S, G> = Result<Result<Result<T, ()>, G>, Aborted>;
+pub fn aborted<T, S, G>() -> DownloadResult<T, S, G> {
+    Err(Aborted())
+}
+pub fn download_ok<T, S, G>(value: T) -> DownloadResult<T, S, G> {
+    Ok(Ok(Ok(value)))
+}
+pub fn download_may_retry_error<T, S, G>(sub_error: S) -> DownloadResult<T, S, G> {
+    Ok(Ok(Err(sub_error)))
+}
+pub fn download_error<T, S, G>(super_error: G) -> DownloadResult<T, S, G> {
+    Ok(Err(super_error))
+}
+
+enum MayRetryError {}
+enum GroupError {}

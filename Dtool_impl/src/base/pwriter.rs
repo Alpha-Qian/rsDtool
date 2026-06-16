@@ -292,8 +292,15 @@ impl<T: ?Sized> DerefDetech for &'static mut T {
         unsafe { DetachRef::new(self) }
     }
 }
+
 impl<T: ?Sized> DerefDetechMut for &'static mut T {
     fn detech_mut(&mut self) -> DetechMut<'_, Self::Target> {
         unsafe { DetechMut::new(self) }
     }
+}
+
+trait PWriter {
+    fn pwrite(&mut self, offset: u64, data: &[u8]);
+
+    fn clone_pwriter(&self) -> Self;
 }

@@ -4,23 +4,24 @@ use std::ops::{Deref, Sub};
 use std::result;
 use std::{ops::ControlFlow, sync::atomic::Ordering};
 
-use crate::downloader::{
-    error::SubError, family::ThreadModel, group_impl::DownloadStream, pwriter::BufWriter,
-};
+use crate::base::{error::SubError, family::ThreadModel, pwriter::BufWriter};
 
-pub struct Remain<F>
+use super::download_stream::DownloadStream;
+
+///多线程逻辑下的remain同步逻辑
+pub struct Remain<'a, F>
 where
     F: ThreadModel,
 {
-    remain: F::RefCounter<F::AtomicCell<i64>>,
+    remain: &'a F::AtomicCell<i64>,
     cache: i64,
 }
 
-impl<F> Remain<F>
+impl<'a, F> Remain<'a, F>
 where
     F: ThreadModel,
 {
-    pub fn new(remain: F::RefCounter<F::AtomicCell<i64>>) -> Self {
+    pub fn new(remain: &'a F::AtomicCell<i64>) -> Self {
         Self {
             remain,
             cache: i64::MAX,
@@ -48,11 +49,11 @@ where
         &mut self.cache
     }
 
-    pub fn remain(&self) -> &F::RefCounter<F::AtomicCell<i64>> {
+    pub fn remain(&self) -> &F::AtomicCell<i64> {
         &self.remain
     }
 
-    pub fn into_raw(self) -> (F::RefCounter<F::AtomicCell<i64>>, i64) {
+    pub fn into_raw(self) -> (&'a F::AtomicCell<i64>, i64) {
         (self.remain, self.cache)
     }
 
@@ -60,38 +61,6 @@ where
         self.cache = self.remain.load(Ordering::Acquire)
     }
 }
-
-// async fn adapt_download<S, W, F>(
-//     context: Remain<F>,
-//     mut write_process: u64,
-//     stream: &mut S,
-//     writer: &mut W,
-//     token: impl AbortToken,
-// ) -> Result<(), SubError<S, W>>
-// where
-//     S: DownloadStream,
-//     W: BufWriter,
-//     F: ThreadModel,
-// {
-//     while let Some(bytes) = stream.try_next().await? {
-//         let len = bytes.len();
-//         if let Some(write_len) = context.splited_len::<F>(len) {
-//             let write_bytes = bytes.slice(..write_len);
-//             writer.pwrite(write_process, bytes).await?;
-//             write_process += write_len;
-//         } else {
-//             return Ok(());
-//         }
-//     }
-//     if context.remain_cache > 0 {
-//         panic!("unexcepted response EOF")
-//     }
-//     Ok(())
-// }
-// pub struct RawWriter<'a, W>{
-//     pwriter: &'a W,
-//     process: u64,
-// }
 
 pub struct Writer<'a, W> {
     pwriter: &'a W,
@@ -170,11 +139,11 @@ where
     {
         let bytes = match stream.try_next().await? {
             Some(b) => b,
-            None => return ControlFlow::Break(()),
+            None => return Ok(ControlFlow::Break(())),
         };
         let len = bytes.len();
         self.write_all(bytes).await?;
-        Ok(ControlFlow::Continue(()))
+        Ok(ControlFlow::Continue(()));
     }
 
     pub async fn fetch_chunk_in_remain<S: DownloadStream>(
@@ -194,10 +163,10 @@ where
         let raw_len = bytes.len();
         if raw_len < remain as usize {
             self.write_all(bytes).await?;
-            return Ok((raw_len, false));
+            return Ok(ControlFlow::Continue(()));
         } else {
             self.write_all(bytes.slice(..remain)).await?;
-            return Ok((remain, true));
+            return Ok(ControlFlow::Break(()));
         }
     }
 }
@@ -215,7 +184,11 @@ where
     W: BufWriter,
     M: ThreadModel,
 {
-    pub fn new(writer: Writer<'a, W>, context: Remain<M>) -> Self {
+    pub fn new(remain: &'a M::AtomicCell<u64>, writer: &'a impl BufWriter) -> Self {
+        todo!()
+    }
+
+    pub fn with_raw(writer: Writer<'a, W>, context: Remain<M>) -> Self {
         Self {
             writer,
             remain: context,
@@ -230,6 +203,7 @@ where
         &self.remain.cache
     }
 
+    ///在remain范围内写入数据
     pub async fn write_in_remain(
         &mut self,
         buffer: impl Deref<Target = [u8]> + 'static,
@@ -259,6 +233,7 @@ where
 
     //pub async fn fetch_stream_optional<S>(mut self)
 
+    ///写入Stream
     pub async fn fetch_stream<S>(&mut self, mut stream: S) -> Result<(), SubError<S, W>>
     where
         S: DownloadStream,
@@ -282,7 +257,8 @@ where
         Ok(())
     }
 
-    pub async fn fetch_conditional<S, F>(
+    ///可暂停写入stream
+    pub async fn stopable_fetch<S, F>(
         &mut self,
         stream: &mut S,
         condition: F,
@@ -322,6 +298,7 @@ where
         return Some(Ok(()));
     }
 
+    ///写入stream的单个chunk
     pub async fn fetch_chunk<S>(
         &mut self,
         stream: &mut S,
@@ -338,7 +315,44 @@ where
         Ok(cf)
     }
 
+    ///结束值缓冲
     pub fn end_cache(&self) -> u64 {
         self.writer.process + self.remain.cache as u64
     }
 }
+
+// ///抽象
+// mod cache_abstart{
+//     trait RemainCache{
+//         type Cell: Radium<Item = i64>
+
+//         fn new(remain: &Self::Cell) -> Self;
+
+//         ///可能是缓存或即使值
+//         fn remain_cache(&self) -> i64;
+
+//         fn remain(&self) -> &Self::Cell;
+//     }
+
+//     struct LocalRemain(radium::Isotope<i64>);
+
+//     impl RemainCache for LocalRemain {
+//         type Cell = radium::Isotope<i64>;
+
+//         fn new(remain: &Self::Cell) -> Self {
+//             Self(remain)
+//         }
+
+//         fn remain_cache(&self) -> i64 {
+//             self.0.load(Ordering::Relaxed)
+//         }
+
+//         fn remain(&self) -> &Self::Cell {
+//             &self.0
+//         }
+//     }
+
+//     trait AtomCache: Radium {
+//         fn cache(&self) -> Self::Item;
+//     }
+// }

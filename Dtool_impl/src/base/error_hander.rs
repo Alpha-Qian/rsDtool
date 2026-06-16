@@ -1,8 +1,8 @@
 use std::ops::ControlFlow;
 
-use crate::downloader::{
+use super::download_stream::DownloadStream;
+use super::{
     error::{SubError, SuperError},
-    group_impl::DownloadStream,
     pwriter::BufWriter,
 };
 trait ErrorHander {

@@ -1,14 +1,7 @@
-pub mod download_group;
-mod error;
-mod error_hander;
-mod error_strategy;
-pub mod family;
-pub mod group_impl;
-mod group_impl2;
-pub mod httprequest;
-mod maybe_async;
-mod pwriter;
-pub mod segment;
-mod strategy;
-mod stream_creater;
-mod subcontext;
+//！reqwest 层
+
+mod builder;
+mod file_writer;
+mod muti_thread_download;
+mod uninterrupt;
+mod upgradable_download;
