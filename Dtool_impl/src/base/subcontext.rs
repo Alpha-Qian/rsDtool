@@ -1,10 +1,9 @@
-use futures::{Stream, TryStreamExt};
+use crate::base::base_error::FetchError;
+use crate::base::{base_error::SubError, family::ThreadModel, pwriter::BufWriter};
+use futures::TryStreamExt;
 use radium::Radium;
-use std::ops::{Deref, Sub};
-use std::result;
+use std::ops::Deref;
 use std::{ops::ControlFlow, sync::atomic::Ordering};
-
-use crate::base::{error::SubError, family::ThreadModel, pwriter::BufWriter};
 
 use super::download_stream::DownloadStream;
 
@@ -71,7 +70,7 @@ impl<'a, W> Writer<'a, W>
 where
     W: BufWriter,
 {
-    pub fn new(pwriter: &'a mut W, process: u64) -> Self {
+    pub fn new(pwriter: &'a W, process: u64) -> Self {
         Self { pwriter, process }
     }
 
@@ -93,21 +92,17 @@ where
         &mut self,
         stream: &mut S,
         mut condition: impl FnMut(u64) -> bool,
-    ) -> Option<Result<(), SubError<S, W>>>
+    ) -> Option<Result<(), FetchError<S, W>>>
     where
         S: DownloadStream,
-        SubError<S, W>: From<S::Error>,
-        SubError<S, W>: From<W::Error>,
     {
         loop {
-            let bytes = match stream.try_next().await {
-                Ok(Some(bytes)) => bytes,
-                Ok(None) => return Some(Ok(())),
-
-                Err(e) => return Some(Err(e.into())),
+            let bytes = match stream.try_next().await.map_err(FetchError::Stream)? {
+                Some(bytes) => bytes,
+                None => return Some(Ok(())),
             };
 
-            self.write_all(bytes).await?;
+            self.write_all(bytes).await.map_err(FetchError::Write);
             if condition(self.process) {
                 return None;
             }
@@ -118,31 +113,24 @@ where
     pub async fn fetch_all<S: DownloadStream>(
         &mut self,
         mut stream: S,
-    ) -> Result<(), SubError<S, W>>
-    where
-        SubError<S, W>: From<S::Error>,
-        SubError<S, W>: From<W::Error>,
-    {
-        while let Some(bytes) = stream.try_next().await? {
-            self.write_all(bytes).await?
+    ) -> Result<(), FetchError<S, W>> {
+        while let Some(bytes) = stream.try_next().await.map_err(FetchError::Stream)? {
+            self.write_all(bytes).await.map_err(FetchError::Write)?
         }
         Ok(())
     }
 
-    pub async fn fetech_chunk<S: DownloadStream>(
+    ///取消不安全
+    pub async fn fetch_chunk<S: DownloadStream>(
         &mut self,
         stream: &mut S,
-    ) -> Result<ControlFlow<()>, SubError<S, W>>
-    where
-        SubError<S, W>: From<S::Error>,
-        SubError<S, W>: From<W::Error>,
-    {
-        let bytes = match stream.try_next().await? {
+    ) -> Result<ControlFlow<()>, FetchError<S, W>> {
+        let bytes = match stream.try_next().await.map_err(FetchError::Stream)? {
             Some(b) => b,
             None => return Ok(ControlFlow::Break(())),
         };
         let len = bytes.len();
-        self.write_all(bytes).await?;
+        self.write_all(bytes).await.map_err(FetchError::Write)?;
         Ok(ControlFlow::Continue(()));
     }
 
@@ -150,15 +138,10 @@ where
         &mut self,
         stream: &mut S,
         remain: i64,
-    ) -> Result<ControlFlow<()>, SubError<S, W>>
-    where
-        SubError<S, W>: From<S::Error>,
-        SubError<S, W>: From<W::Error>,
-    {
-        let bytes = match stream.try_next().await {
-            Ok(Some(b)) => b,
-            Ok(None) => return Ok(ControlFlow::Break(())),
-            Err(e) => return Err(e.into()),
+    ) -> Result<ControlFlow<()>, FetchError<S, W>> {
+        let bytes = match stream.try_next().await.map_err(FetchError::Stream)? {
+            Some(b) => b,
+            None => return Ok(ControlFlow::Break(())),
         };
         let raw_len = bytes.len();
         if raw_len < remain as usize {
@@ -234,21 +217,25 @@ where
     //pub async fn fetch_stream_optional<S>(mut self)
 
     ///写入Stream
-    pub async fn fetch_stream<S>(&mut self, mut stream: S) -> Result<(), SubError<S, W>>
+    pub async fn fetch_stream<S>(&mut self, mut stream: S) -> Result<(), FetchError<S, W>>
     where
         S: DownloadStream,
-        SubError<S, W>: From<S::Error>,
-        SubError<S, W>: From<W::Error>,
     {
-        while let Some(bytes) = stream.try_next().await? {
+        while let Some(bytes) = stream.try_next().await.map_err(FetchError::Stream)? {
             let raw_len = bytes.len();
             match self.remain.split_chunk(bytes.len()) {
                 ControlFlow::Continue(()) => {
-                    self.writer.write_all(bytes).await?;
+                    self.writer
+                        .write_all(bytes)
+                        .await
+                        .map_err(FetchError::Write)?;
                     self.remain.record_writed(raw_len);
                 }
                 ControlFlow::Break(len) => {
-                    self.writer.write_all(bytes.slice(..len)).await?;
+                    self.writer
+                        .write_all(bytes.slice(..len))
+                        .await
+                        .map_err(FetchError::Write)?;
                     self.remain.record_writed(len);
                     break;
                 }
@@ -299,25 +286,36 @@ where
     }
 
     ///写入stream的单个chunk
+    ///
     pub async fn fetch_chunk<S>(
         &mut self,
         stream: &mut S,
-    ) -> Result<ControlFlow<usize>, SubError<S, W>>
+    ) -> Result<ControlFlow<()>, FetchError<S, W>>
     where
         S: DownloadStream,
-        SubError<S, W>: From<S::Error>,
-        SubError<S, W>: From<W::Error>,
     {
-        let Some(bytes) = stream.try_next().await? else {
+        let Some(bytes) = stream.try_next().await.map_err(FetchError::Stream)? else {
             return Ok(ControlFlow::Break(()));
         };
-        let cf = self.write_in_remain(bytes).await?.map_break(|_| {});
+        let cf = self
+            .write_in_remain(bytes)
+            .await
+            .map_err(FetchError::Write)?
+            .map_break(|_| {});
         Ok(cf)
     }
 
     ///结束值缓冲
     pub fn end_cache(&self) -> u64 {
         self.writer.process + self.remain.cache as u64
+    }
+}
+
+struct WriteError<W: BufWriter>(pub W::Error);
+
+impl<W: BufWriter, S: DownloadStream> From<WriteError<W>> for FetchError<S, W> {
+    fn from(value: WriteError<W>) -> Self {
+        Self::Write(value.0)
     }
 }
 

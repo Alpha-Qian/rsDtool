@@ -9,48 +9,64 @@ use std::{
     time::SystemTime,
 };
 
-// fn error_for_succes<S, W>(
-//     response: Response,
-//     only_partical: bool,
-// ) -> Result<Response, SubError<S, W>>
-// where
-//     S: DownloadStream<Error = reqwest::Error>,
-//     W: BufWriter,
-// {
-//     let status_code = response.status();
-//     if response.status() == StatusCode::PARTIAL_CONTENT {
-//         return Ok(response);
-//     } else if response.status() == StatusCode::OK && !only_partical {
-//         return Err(SubError::Download(DownloaderError::ErrorSuccesStatus(
-//             status_code,
-//         )));
-//     } else if 200 < status_code.as_u16() && status_code.as_u16() < 300 {
-//         return Err(SubError::Download(DownloaderError::ErrorSuccesStatus(
-//             status_code,
-//         )));
-//     };
+//--------------basic error
 
-//     let error = response.error_for_status_ref().unwrap_err();
+pub struct StreamError<S: DownloadStream>(pub S::Error);
 
-//     if status_code == StatusCode::REQUEST_TIMEOUT {
-//         //408
-//         return Err(SubError::CustomRetry(RetrySuggest::Immediately, error));
-//     } else if status_code == StatusCode::TOO_MANY_REQUESTS {
-//         //429
-//         return Err(SubError::CustomRetry(RetrySuggest::WaitFuzzy, error));
-//     }
+pub struct WriteError<W: BufWriter>(pub W::Error);
 
-//     if status_code.is_client_error() {
-//         let error = response.error_for_status_ref().unwrap_err();
-//         return Err(SubError::CustomRetry(RetrySuggest::Break, error));
-//     } else if status_code.is_server_error() {
-//         return Err(SubError::CustomRetry(RetrySuggest::WaitFuzzy, error));
-//     } else {
-//         let error = response.error_for_status_ref().unwrap_err();
-//         return Err(SubError::CustomRetry(RetrySuggest::Break, error));
-//     }
-// }
-//
+///原始下载错误
+pub enum FetchError<S: DownloadStream, W: BufWriter> {
+    Stream(S::Error),
+    Write(W::Error),
+}
+
+impl<W: BufWriter, S: DownloadStream> From<StreamError<S>> for FetchError<S, W> {
+    fn from(value: StreamError<S>) -> Self {
+        Self::Stream(value.0)
+    }
+}
+
+impl<S, W> Debug for FetchError<S, W>
+where
+    S: DownloadStream,
+    W: BufWriter,
+    S::Error: Debug,
+    W::Error: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stream(s) => f.debug_tuple("FetchError::Stream").field(&s).finish(),
+            Self::Write(w) => f.debug_tuple("FetchError::Write").field(&w).finish(),
+        }
+    }
+}
+
+impl<S, W> Display for FetchError<S, W>
+where
+    S: DownloadStream,
+    W: BufWriter,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stream(s) => f.write_str("Stream Error"),
+            Self::Write(w) => f.write_str("Write Error"),
+        }
+    }
+}
+
+impl<S, W> Error for FetchError<S, W>
+where
+    S: DownloadStream<Error: Error + 'static>,
+    W: BufWriter<Error: Error + 'static>,
+{
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Stream(s) => s.into(),
+            Self::Write(w) => w.into(),
+        }
+    }
+}
 
 ///下载器产生的原始错误
 pub enum RawError<S, W>

@@ -1,6 +1,5 @@
 //!定义分块下载的并发结构体
 //!
-
 use std::cell::UnsafeCell;
 use std::hint::unreachable_unchecked;
 use std::ops::Deref;
@@ -82,9 +81,9 @@ where
     F: ThreadModel,
     P: GroupParts<F>,
 {
-    pub fn new_idle(group: P::GroupShare<'a>, data: P::Data<'a>, idle_data: P::Result<'a>) -> Self {
+    pub fn new_idle(group: P::StaticData<'a>, idle_data: P::Result<'a>) -> Self {
         let in_lock_shared = InLockShared {
-            data,
+            data: group,
             state: State::Idle(IdleSlot { data: idle_data }),
         };
 
@@ -94,14 +93,9 @@ where
         )))
     }
 
-    pub(crate) fn new_busy(
-        group: P::GroupShare<'a>,
-        data: P::Data<'a>,
-        busy_data: P::Waker<'a>,
-        waker: P::Waker<'a>,
-    ) -> Self {
+    pub(crate) fn new_busy(group: P::StaticData<'a>, busy_data: P::Data<'a>) -> Self {
         let in_lock_shared = InLockShared {
-            data,
+            data: group,
             state: State::Busy(BusySlot {
                 slots: SlotVec::new(),
                 data: busy_data,
@@ -119,7 +113,7 @@ where
         unsafe { GroupGuard::new_unchecked(self) }
     }
 
-    pub fn share(&self) -> &P::GroupShare<'a> {
+    pub fn share(&self) -> &P::StaticData<'a> {
         &self.0.share
     }
 }
@@ -144,7 +138,7 @@ where
     }
 
     ///GroupExt
-    pub fn group(&self) -> &P::GroupShare<'a> {
+    pub fn group(&self) -> &P::StaticData<'a> {
         &self.group.share
     }
 
@@ -250,10 +244,10 @@ where
         todo!()
     }
 
-    pub fn busy_data(&self) -> &P::Waker<'a> {
+    pub fn busy_data(&self) -> &P::Data<'a> {
         todo!()
     }
-    pub fn busy_data_mut(&self) -> &mut P::Waker<'a> {
+    pub fn busy_data_mut(&self) -> &mut P::Data<'a> {
         todo!()
     }
 }
@@ -276,7 +270,7 @@ where
 
     pub unsafe fn into_busy(
         self,
-        busy_data: P::Waker<'a>, //slots: SlotVec<'a, F, P>,
+        busy_data: P::Data<'a>, //slots: SlotVec<'a, F, P>,
     ) -> (BusyGroup<'t, 'a, F, P>, P::Result<'a>) {
         // *self.0.state_data_mut() = State::Busy(BS)
         todo!()
@@ -299,10 +293,10 @@ where
         todo!()
     }
 
-    pub fn busy_data(&self) -> &P::Waker<'a> {
+    pub fn busy_data(&self) -> &P::Data<'a> {
         todo!()
     }
-    pub fn busy_data_mut(&mut self) -> &mut P::Waker<'a> {
+    pub fn busy_data_mut(&mut self) -> &mut P::Data<'a> {
         todo!()
     }
 
@@ -474,14 +468,14 @@ where
     F: ThreadModel,
     E: GroupParts<F>,
 {
-    share: E::GroupShare<'a>,
+    share: E::StaticData<'a>,
 
     mutex: F::Mutex,
     locked: SyncUnsafeCell<InLockShared<'a, F, E>>,
 }
 
 impl<'a, F: ThreadModel, E: GroupParts<F>> GroupShared<'a, F, E> {
-    fn with_raw(share: E::GroupShare<'a>, inlock: InLockShared<'a, F, E>) -> Self {
+    fn with_raw(share: E::StaticData<'a>, inlock: InLockShared<'a, F, E>) -> Self {
         Self {
             share,
 
@@ -570,7 +564,7 @@ where
     E: GroupParts<F>,
 {
     slots: SlotVec<'a, F, E>,
-    data: E::Waker<'a>,
+    data: E::Data<'a>,
 }
 
 impl<'a, F, E> BusySlot<'a, F, E>
@@ -578,7 +572,7 @@ where
     F: ThreadModel,
     E: GroupParts<F>,
 {
-    pub fn empty(data: E::Waker<'a>, waker: E::Waker<'a>) -> Self {
+    pub fn empty(data: E::Data<'a>, waker: E::Data<'a>) -> Self {
         Self {
             slots: SlotVec(Vec::new()),
             data,
@@ -587,8 +581,8 @@ where
 
     pub unsafe fn with_raw(
         slots: SlotVec<'a, F, E>,
-        data: E::Waker<'a>,
-        waker: E::Waker<'a>,
+        data: E::Data<'a>,
+        waker: E::Data<'a>,
     ) -> Self {
         Self { slots, data, waker }
     }
@@ -600,14 +594,14 @@ where
         &mut self.slots
     }
 
-    pub fn data(&self) -> &E::Waker<'a> {
+    pub fn data(&self) -> &E::Data<'a> {
         &self.data
     }
-    pub fn data_mut(&mut self) -> &mut E::Waker<'a> {
+    pub fn data_mut(&mut self) -> &mut E::Data<'a> {
         &mut self.data
     }
 
-    pub fn into_raw(self) -> (SlotVec<'a, F, E>, E::Waker<'a>, E::Waker<'a>) {
+    pub fn into_raw(self) -> (SlotVec<'a, F, E>, E::Data<'a>, E::Data<'a>) {
         (self.slots, self.data, self.waker)
     }
 }
@@ -685,13 +679,12 @@ where
 
 pub trait GroupParts<F: ThreadModel> {
     ///所有线程共享的只读数据
-    type GroupShare<'a>;
+    type StaticData<'a>; //GroupShare
 
     //GroupInLock
     // 访问这四项需要解锁
-    type Data<'a>;
     type Result<'a>;
-    type Waker<'a>;
+    type Data<'a>;
     type SlotData<'a>; //每个线程一份
 
     ///每个线程一份的只读数据
@@ -776,7 +769,7 @@ where
         self.0.slot()
     }
 
-    fn group(self) -> &'t <P as GroupParts<F>>::GroupShare<'a> {
+    fn group(self) -> &'t <P as GroupParts<F>>::StaticData<'a> {
         self.0.group()
     }
 }
@@ -793,7 +786,7 @@ where
     F: ThreadModel,
     P: GroupParts<F>,
 {
-    fn group(self) -> &'t <P as GroupParts<F>>::GroupShare<'a> {
+    fn group(self) -> &'t <P as GroupParts<F>>::StaticData<'a> {
         self.0.share()
     }
 }
@@ -806,3 +799,9 @@ where
 // impl  for  {
 
 // }
+
+enum GroupState<M: ThreadModel, P: GroupParts<M>> {
+    Empty,
+    Running(P::Data),
+    Done(P::Result),
+}

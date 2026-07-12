@@ -3,7 +3,7 @@ use std::future::poll_fn;
 use std::task::Poll;
 
 use crate::base::{
-    download_group::{self, BusyGroup, DownloadGroup, GroupGuard, GroupParts, State}, family::ThreadModel, group_impl2::AsyncParts, pwriter::BufWriter, request_info::RequestInfo, segment::Segment
+    group_construct::{self, BusyGroup, DownloadGroup, GroupGuard, GroupParts, State}, family::ThreadModel, group_impl2::AsyncParts, pwriter::BufWriter, request_info::RequestInfo, segment::Segment
 };
 
 struct Builder {
@@ -32,12 +32,17 @@ impl Builder {
     }
 }
 
+
+///使用迭代器恢复
 struct Resumer<I> {
     info: RequestInfo,
     segments: I,
 }
 
-impl<I: IntoIterator<Item = Segment>> Resumer<I> {
+impl<I> Resumer<I>
+where
+    I: IntoIterator<Item = Segment>
+{
     async fn download_scoped<
         M: ThreadModel,
         Iter: IntoIterator<Item = impl Future>,
@@ -61,24 +66,6 @@ impl<I: IntoIterator<Item = Segment>> Resumer<I> {
         }
     }
 }
-
-trait OwnIter{
-    type Target;
-    fn next(self) -> Option<(Self, Self::Target)>;
-}
-
-fn map(mut iter: impl OwnIter, f: impl FnMut()) {
-    loop {
-        match iter.next() {
-            Some((next, target)) => {
-                iter = next;
-
-            },
-            None => break,
-        }
-    }
-}
-
 
 #[cfg(test)]
 mod test{

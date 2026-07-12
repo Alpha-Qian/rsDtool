@@ -7,17 +7,16 @@ use std::
 use radium::Radium;
 
 use crate::base::{
-    download_group::{BusyGroup, DownloadGroup, GroupParts, IdleGroup, IdleReporter, Reporter, ReporterBusy, ReporterGuard, Slot, SlotShare, State}, error::{Aborted, MayAbort, RawError, SuperError}, family::ThreadModel, group_impl::DownloadStream, pwriter::BufWriter, request_info::RequestInfo, segment::Segment, subcontext::RemainWriter
+    group_construct::{BusyGroup, DownloadGroup, GroupParts, IdleGroup, IdleReporter, Reporter, ReporterBusy, ReporterGuard, Slot, SlotShare, State}, base_error::{Aborted, MayAbort, RawError, SuperError}, family::ThreadModel, group_async_parts::DownloadStream, pwriter::BufWriter, request_info::RequestInfo, segment::Segment, subcontext::RemainWriter
 };
 
 pub struct AsyncParts;
 
 impl<F: ThreadModel> GroupParts<F> for AsyncParts{
-    type GroupShare<'a> = GroupShareData<F>;
+    type StaticData<'a> = GroupShareData<F>;
 
-    type Data<'a> = ();
-    type Result<'a> = IdleData;//运行结果
-    type Waker<'a> = BusyData;//唤醒器
+    type Result<'a> = Option<Residual>;//运行结果
+    type Data<'a> = RunningData;//唤醒器
     type SlotData<'a> = SlotData;//结束位置
 
     type SlotShare<'a> = SlotShareData<F>;//进度，取消标志
@@ -28,21 +27,35 @@ struct GroupShareData<F: ThreadModel> {
     progress: F::AtomicCell<u64>,
 }
 
-struct BusyData {
-    waker: Waker,
+pub struct RunningData {
+    pub(crate) waker: Waker,
+    pub(crate) info: RequestInfo,
+
+    // 延迟结束线程
+    // 在创建新线程时，将此值-1就不用实际创建线程了
+    pub(crate) lazy_cancel_count: usize,
 }
 
-struct IdleData {
-    result: Result<(), (SuperError<(),()>, Vec<Segment>)>,
+// ///残留值
+// pub struct IdleData {
+//     pub error_info: Option<(SuperError<(),()>, Vec<Segment>)>,
+// }
+
+///上次运行失败的残留值
+struct Residual{
+    error: (),
+    error_segment: Segment,
+    segments: Vec<Segment>,
 }
+
 
 struct SlotData{
     end: u64,
 }
 
 struct SlotShareData<F: ThreadModel>{
-    abort: F::AtomicCell<bool>,
-    remain: F::AtomicCell<u64>,
+    pub(crate) abort: F::AtomicCell<bool>,
+    pub(crate) remain: F::AtomicCell<u64>,
 }
 
 impl<F> DownloadGroup<'static, F, AsyncParts>
@@ -57,7 +70,7 @@ where
             match guard.state_data() {
                 State::Idle(s) => {
                     let result = Ok(());
-                    swap(&mut s.data.result, &mut result);
+                    swap(&mut s.data.error_info, &mut result);
                     return result
                 },
                 State::Busy(s) => {
@@ -185,7 +198,7 @@ where
     ///作为reporter执行
     async fn execute<F, S, W>(&self, task: F)
     where
-        F: AsyncFnMut(<AsyncParts as GroupParts<M>>::GroupShare, <AsyncParts as GroupParts<M>>::SlotShare) -> Result<Result<(), RawError<S, W>>>,
+        F: AsyncFnMut(<AsyncParts as GroupParts<M>>::StaticData, <AsyncParts as GroupParts<M>>::SlotShare) -> Result<Result<(), RawError<S, W>>>,
         S: DownloadStream,
         W: BufWriter,
     {

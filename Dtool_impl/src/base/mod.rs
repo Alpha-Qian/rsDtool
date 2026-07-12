@@ -1,11 +1,11 @@
 //! future::Stream层和 BufWriter层
 
-pub mod download_group;
-mod download_stream;
-mod error;
+mod base_error;
+pub mod download_stream;
 mod error_hander;
 pub mod family;
-mod group_impl;
+pub mod group_async_parts;
+pub mod group_construct;
 pub mod pwriter;
 pub mod request_info;
 pub mod segment;

@@ -2,4 +2,5 @@ pub mod base;
 pub mod downloader;
 
 pub mod executer;
-mod utils;
+mod sealed;
+pub(crate) mod utils;
