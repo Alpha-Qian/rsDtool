@@ -11,13 +11,17 @@ use futures::task::noop_waker;
 use radium::Radium;
 use reqwest::blocking::Client;
 
-use crate::base::{
-    family::ThreadModel,
-    group_async_parts::{AsyncParts, IdleData, RunningData},
-    group_construct::{DownloadGroup, GroupParts, Reporter, State},
-    request_info::RequestInfo,
-    segment::Segment,
+use crate::{
+    base::{
+        family::ThreadModel,
+        group_construct::{DownloadGroup, GroupParts, Reporter, State},
+        request_info::RequestInfo,
+        segment::Segment,
+    },
+    downloader::group_download_methold::DownloadMethod,
 };
+
+use crate::downloader::group_async_parts::{AsyncParts, IdleData, RunningData};
 // 状态
 // 初始：管理器空闲，下载组空闲 -创建下载-> 下载中；
 // 下载中：管理器运行中，下载器繁忙 -下载完成-> 完成；
@@ -26,9 +30,16 @@ use crate::base::{
 // 未指定：管理器空闲，下载器繁忙
 
 #[repr(transparent)]
-struct RunningManager<M: ThreadModel>(DownloadGroup<'static, M, AsyncParts>);
+struct RunningManager<M, D>(DownloadGroup<'static, M, AsyncParts<D>>)
+where
+    M: ThreadModel,
+    D: DownloadMethod;
 
-impl<M: ThreadModel> RunningManager<M> {
+impl<M, D> RunningManager<M, D>
+where
+    M: ThreadModel,
+    D: DownloadMethod,
+{
     // ///创建一个已经完成但还没被join的RunningManager
     // fn new_unjoined(info: RequestInfo) -> Self {
     //     let busy_data = new_busy_data(info);
@@ -58,7 +69,7 @@ impl<M: ThreadModel> RunningManager<M> {
         todo!()
     }
 
-    fn try_set_waker(self, waker: Waker) -> Result<(), (IdleManager<M>, Option<impl Error>)> {
+    fn try_set_waker(self, waker: Waker) -> Result<(), (IdleManager<M, D>, Option<impl Error>)> {
         let guard = self.0.lock();
         match guard.state() {
             State::Busy(busy) => {
@@ -73,7 +84,7 @@ impl<M: ThreadModel> RunningManager<M> {
         }
     }
 
-    fn try_take_result(self) -> Result<(IdleManager<M>, Option<impl Error>), Self> {
+    fn try_take_result(self) -> Result<(IdleManager<M, D>, Option<impl Error>), Self> {
         let guard = self.0.lock();
         match guard.state() {
             State::Busy(_) => {
@@ -164,9 +175,16 @@ impl<M: ThreadModel> RunningManager<M> {
 
 ///主要进行下载任务的初始化
 #[repr(transparent)]
-struct IdleManager<M: ThreadModel>(DownloadGroup<'static, M, AsyncParts>);
+struct IdleManager<M, D>(DownloadGroup<'static, M, AsyncParts<D>>)
+where
+    M: ThreadModel,
+    D: DownloadMethod;
 
-impl<M: ThreadModel> IdleManager<M> {
+impl<M, D> IdleManager<M, D>
+where
+    M: ThreadModel,
+    D: DownloadMethod,
+{
     fn new() -> Self {
         let idle = IdleData { error_info: None };
         let group = DownloadGroup::new_idle((), idle);
@@ -198,13 +216,6 @@ impl<M: ThreadModel> IdleManager<M> {
         todo!()
     }
 }
-
-struct Manager<M: ThreadModel> {
-    running: bool,
-    group: DownloadGroup<'static, M, AsyncParts>,
-}
-
-impl<M: ThreadModel> Manager<M> {}
 
 //struct Executer<M: ThreadModel>(reporter: Reporter<'static, M, AsyncParts>);
 

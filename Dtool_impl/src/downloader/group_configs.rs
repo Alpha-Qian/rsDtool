@@ -1,6 +1,15 @@
+use crate::downloader::group_download_methold::DownloadMethod;
+
 ///功能门控
 trait SpecialParts {
-    type AbortToken: Abort;
+    type DownloadMethod: DownloadMethod;
+
+    type AbortGroup: Abort;
+    type AbortGroupHandle: AbortHandle;
+
+    type AbortSingle: Abort;
+    type AbortSingleHandle: AbortHandle;
+
     type Waker: Wake;
 }
 
@@ -10,6 +19,10 @@ trait Wake {
 
 trait Abort {
     fn aborted(&mut self) -> bool;
+}
+
+trait AbortHandle {
+    fn abort();
 }
 
 ///关闭该功能
@@ -24,4 +37,8 @@ impl Abort for Disable {
     fn aborted(&mut self) -> bool {
         false /* Disable */
     }
+}
+
+impl AbortHandle for Disable {
+    fn abort() {}
 }

@@ -204,6 +204,15 @@ where
         }
     }
 
+    pub fn index(&self) -> &usize {
+        //安全性：已解锁
+        unsafe { &*self.0.slot_share.index.get() }
+    }
+
+    pub fn index_mut(&mut self) -> &mut usize {
+        unsafe { &mut *self.0.slot_share.index.get() }
+    }
+
     fn raw(&self) -> &Reporter<'a, F, P> {
         self.0
     }
@@ -306,6 +315,24 @@ where
 
     pub fn my_slot_data_mut(&mut self) -> &mut P::SlotData<'a> {
         todo!()
+    }
+
+    pub fn index(&self) -> &usize {
+        //安全性：已解锁
+        unsafe { &*self.0.0.slot_share.index.get() }
+    }
+
+    pub fn index_mut(&mut self) -> &mut usize {
+        //安全性： 已解锁
+        unsafe { &mut *self.0.0.slot_share.index.get() }
+    }
+
+    ///子任务中止整个下载组
+    pub fn into_idle(self, idle: P::Result<'a>) -> IdleReporter<'a, F, P> {
+        let guard = self.0;
+        let locked = unsafe { &mut *guard.0.group.locked.get() };
+        *locked.state = State::Idle(todo!());
+        IdleReporter(guard)
     }
 }
 
