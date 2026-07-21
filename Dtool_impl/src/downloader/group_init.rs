@@ -2,7 +2,9 @@ use crate::{
     base::{family::ThreadModel, request_info::RequestInfo, segment::Segment},
     downloader::{
         group_async_parts::GroupShare,
-        group_download_methold::{RawDownloadUnInjected, SegmentDownload},
+        group_download_methold::{
+            IntoDownloader, RawDownloadUnInjected, SegmentDownload, SegmentProvider,
+        },
         group_manager::{IdleManager, RunningManager},
     },
 };
@@ -20,6 +22,27 @@ trait ManagerInit {
     type SegmentIter: Iterator<Item = Segment>;
 
     fn into_initer(self) -> RawIniter<Self::SegmentIter>;
+}
+
+struct NewIniter<I, P> {
+    info: RequestInfo,
+
+    segments: I,
+    segment_providers: P, //P::next -> impl SegmentProviders
+}
+
+impl<I, P> NewIniter<I, P>
+where
+    I: Iterator<Item = Segment>,
+    P: Iterator<Item: SegmentProvider>,
+{
+    fn init<E, D: IntoDownloader, M: ThreadModel>(
+        self,
+        idle: IdleManager<E, M>,
+    ) -> (RunningManager<E, M>, impl Iterator<Item: Future>) {
+        // fn() -> impl Future<Item: Any> "Associated Type Bounds" (ATB)语法，好像哪里可以用到忘了
+        todo!()
+    }
 }
 
 ///原始的初始化器

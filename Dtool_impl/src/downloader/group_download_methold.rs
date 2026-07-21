@@ -25,6 +25,7 @@ use crate::{
 //
 
 ///A alias name of AsyncFnOnce(C) -> Result<bool, Self::Error>
+/// Maybe Downloader<C> can be rename to CanInjectBy<C>
 pub trait Downloader<C> {
     type Error;
     async fn download(self, ctx: C) -> Result<bool, Self::Error>;
@@ -82,8 +83,34 @@ fn need_download<I: DownloadContext, D: Downloader<I>>(download: D) {
     todo!()
 }
 
+// trait Downloader2 {
+//     type Error;
+//     async fn download<C: DownloadContext>(self, ctx: C) -> Result<bool, Self::Error>;
+// }
+
+// impl<F> Downloader2 for F where F: AsyncFnOnce() {}
+
 ///创建新下载
 struct New;
 
 ///从嗅探响应下载
 struct FromSniffingResponse;
+
+// trait CanInjectBy {
+//     type Error;
+//     type Context: DownloadContext;
+
+//     async fn inject(self, context: Self::Context) -> Result<bool, Self::Error>;
+// }
+
+// impl<F, E, C: DownloadContext> CanInjectBy for F
+// where
+//     F: AsyncFnOnce(C) -> Result<bool, E>,
+// {
+//     type Error = E;
+//     type Context = C;
+
+//     async fn inject(self, context: C) -> Result<bool, Self::Error> {
+//         self(context)
+//     }
+// }
