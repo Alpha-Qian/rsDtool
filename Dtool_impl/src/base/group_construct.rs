@@ -2,12 +2,15 @@
 //!
 use std::cell::UnsafeCell;
 use std::hint::unreachable_unchecked;
+use std::marker::PhantomData;
 use std::ops::Deref;
 use std::task::Waker;
 use std::{
     ops::{Index, IndexMut},
     ptr,
 };
+
+use crate::base::segment::Segment;
 
 use super::family::{Lockable, RefCounted, RefCounter, ThreadModel};
 
@@ -30,13 +33,13 @@ where
     F: ThreadModel,
     E: GroupParts<F>,
 {
-    group: F::RefCounter<GroupShared<'a, F, E>>,
-    slot_share: F::RefCounter<SlotShare<'a, F, E>>,
+    pub(crate) group: F::RefCounter<GroupShared<'a, F, E>>,
+    pub(crate) slot_share: F::RefCounter<SlotShare<'a, F, E>>,
 }
 
 //------------------------Guard struct----------------------------
 
-pub struct GroupGuard<'t, 'a, F, P>(&'t DownloadGroup<'a, F, P>)
+pub struct GroupGuard<'t, 'a, F, P>(pub(crate) &'t DownloadGroup<'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
@@ -49,7 +52,7 @@ where
 
 // -----------Busy and Idle struct  -------------------
 #[repr(transparent)]
-pub struct BusyGroup<'t, 'a, F, P>(GroupGuard<'t, 'a, F, P>)
+pub struct BusyGroup<'t, 'a, F, P>(pub(crate) GroupGuard<'t, 'a, F, P>)
 where
     F: ThreadModel,
     P: GroupParts<F>;
@@ -96,7 +99,7 @@ where
     pub(crate) fn new_busy(group: P::StaticData<'a>, busy_data: P::Data<'a>) -> Self {
         let in_lock_shared = InLockShared {
             data: group,
-            state: State::Busy(BusySlot {
+            state: State::Running(BusySlot {
                 slots: SlotVec::new(),
                 data: busy_data,
             }),
@@ -174,7 +177,7 @@ where
     pub fn state(self) -> State<BusyGroup<'t, 'a, F, P>, IdleGroup<'t, 'a, F, P>> {
         let state = unsafe { &(*self.0.0.locked.get()).state };
         match state {
-            State::Busy(_) => return State::Busy(BusyGroup(self)),
+            State::Running(_) => return State::Running(BusyGroup(self)),
             State::Idle(_) => return State::Idle(IdleGroup(self)),
         }
     }
@@ -199,7 +202,7 @@ where
     pub fn state(self) -> State<BusyReporter<'t, 'a, F, P>, IdleReporter<'t, 'a, F, P>> {
         let state = unsafe { &(*self.0.group.locked.get()).state };
         match state {
-            State::Busy(_) => State::Busy(BusyReporter(self)),
+            State::Running(_) => State::Running(BusyReporter(self)),
             State::Idle(_) => State::Idle(IdleReporter(self)),
         }
     }
@@ -242,22 +245,42 @@ where
     F: ThreadModel,
     P: GroupParts<F>,
 {
+    // pub fn from_busy() -> Self {
+    //     todo!()
+    // }
+
     pub unsafe fn new_unchecked(groupguard: GroupGuard<'t, 'a, F, P>) -> Self {
         Self(groupguard)
     }
 
     pub fn slots(&self) -> &SlotVec<'a, F, P> {
-        todo!()
+        unsafe { &self.0.state_data().busy().unwrap_unchecked().slots }
     }
     pub fn slots_mut(&mut self) -> &mut SlotVec<'a, F, P> {
-        todo!()
+        unsafe { &mut self.0.state_data().busy().unwrap_unchecked().slots }
     }
 
     pub fn busy_data(&self) -> &P::Data<'a> {
-        todo!()
+        unsafe { &self.0.state_data().busy().unwrap_unchecked().data }
     }
     pub fn busy_data_mut(&self) -> &mut P::Data<'a> {
+        unsafe { &mut self.0.state_data().busy().unwrap_unchecked().data }
+    }
+
+    pub fn into_idle(
+        self,
+        idle_data: P::Result<'a>,
+    ) -> (IdleGroup<'t, 'a, F, P>, SlotVec<'a, F, P>, P::Data<'a>) {
         todo!()
+    }
+
+    pub fn submit_segment(&self, segment: Segment) -> Reporter<'a, F, P> {
+        let slots = self.slots_mut();
+        todo!()
+    }
+
+    fn push_slot(&self, slot: Slot<'a, F, P>) {
+        self.slots_mut().push_slot(slot);
     }
 }
 
@@ -266,24 +289,28 @@ where
     F: ThreadModel,
     P: GroupParts<F>,
 {
+    // pub fn from_busy() -> Self {
+    //     todo!()
+    // }
     pub unsafe fn new_unchecked(guard: GroupGuard<'t, 'a, F, P>) -> Self {
         Self(guard)
     }
 
     pub fn idle_data(&self) -> &P::Result<'a> {
-        todo!()
-    }
-    pub fn idle_data_mut(&mut self) -> &mut P::Result<'a> {
-        todo!()
+        unsafe { &self.0.state_data().idle().unwrap_unchecked().data }
     }
 
-    pub unsafe fn into_busy(
-        self,
-        busy_data: P::Data<'a>, //slots: SlotVec<'a, F, P>,
-    ) -> (BusyGroup<'t, 'a, F, P>, P::Result<'a>) {
-        // *self.0.state_data_mut() = State::Busy(BS)
-        todo!()
+    pub fn idle_data_mut(&mut self) -> &mut P::Result<'a> {
+        unsafe { &mut self.0.state_data().idle().unwrap_unchecked().data }
     }
+
+    // pub unsafe fn into_busy(
+    //     self,
+    //     busy_data: P::Data<'a>, //slots: SlotVec<'a, F, P>,
+    // ) -> (BusyGroup<'t, 'a, F, P>, P::Result<'a>) {
+    //     // *self.0.state_data_mut() = State::Busy(BS)
+    //     todo!()
+    // }
 }
 
 impl<'t, 'a, F, P> BusyReporter<'t, 'a, F, P>
@@ -354,7 +381,7 @@ where
 }
 
 //#[derive(Clone, Debug, Default)]
-struct SlotVec<'a, F, E>(pub Vec<Slot<'a, F, E>>)
+pub struct SlotVec<'a, F, E>(pub Vec<Slot<'a, F, E>>)
 where
     F: ThreadModel,
     E: GroupParts<F>;
@@ -527,14 +554,14 @@ where
     state: State<BusySlot<'a, F, E>, IdleSlot<'a, F, E>>,
 }
 
-pub enum State<T, U> {
-    Busy(T),
-    Idle(U),
+pub enum State<B, I> {
+    Running(B),
+    Idle(I),
 }
 
-impl<T, U> State<T, U> {
+impl<B, I> State<B, I> {
     fn is_busy(&self) -> bool {
-        matches!(self, Self::Busy(_))
+        matches!(self, Self::Running(_))
     }
 
     fn is_idle(&self) -> bool {
@@ -543,12 +570,12 @@ impl<T, U> State<T, U> {
 
     ///安全性：
     /// self 为busy变体，且f不会产生panic
-    pub unsafe fn busy_to_idle_unchecked(&mut self, f: impl FnOnce(T) -> U) {
+    pub unsafe fn busy_to_idle_unchecked(&mut self, f: impl FnOnce(B) -> I) {
         unsafe {
             let this = self as *mut Self;
             match self {
-                Self::Busy(busy) => {
-                    ptr::write(this, State::Idle(f(ptr::read::<T>(busy as *const T))))
+                Self::Running(busy) => {
+                    ptr::write(this, State::Idle(f(ptr::read::<B>(busy as *const B))))
                 }
                 _ => unreachable_unchecked(),
             }
@@ -557,29 +584,57 @@ impl<T, U> State<T, U> {
 
     ///安全性：
     /// self为idle变体，且f不会产生panic
-    pub unsafe fn idle_to_busy_unchecked(&mut self, f: impl FnOnce(U) -> T) {
+    pub unsafe fn idle_to_busy_unchecked(&mut self, f: impl FnOnce(I) -> B) {
         unsafe {
             let this = self as *mut Self;
             match self {
                 Self::Idle(idle) => {
-                    ptr::write(this, State::Busy(f(ptr::read::<U>(idle as *const U))))
+                    ptr::write(this, State::Running(f(ptr::read::<I>(idle as *const I))))
                 }
                 _ => unreachable_unchecked(),
             };
         }
     }
 
-    pub fn idle(self) -> Option<U> {
+    pub fn idle(self) -> Option<I> {
         match self {
             Self::Idle(idle) => Some(idle),
             _ => None,
         }
     }
 
-    pub fn busy(self) -> Option<T> {
+    pub fn busy(self) -> Option<B> {
         match self {
-            Self::Busy(busy) => Some(busy),
+            Self::Running(busy) => Some(busy),
             _ => None,
+        }
+    }
+
+    pub fn map_busy<R>(self, f: impl FnOnce(B) -> R) -> State<R, I> {
+        match self {
+            Self::Running(r) => State::Running(f(r)),
+            Self::Idle(t) => Self::Idle(t),
+        }
+    }
+
+    pub fn map_idle<R>(self, f: impl FnOnce(B) -> R) -> State<B, R> {
+        match self {
+            Self::Idle(i) => State::Idle(f(i)),
+            State::Running(r) => State::Running(r),
+        }
+    }
+
+    pub fn running_and_then<R>(self, f: impl FnOnce(B) -> State<R, I>) -> State<R, I> {
+        match self {
+            State::Running(r) => f(r),
+            State::Idle(i) => State::Idle(i),
+        }
+    }
+
+    pub fn idle_and_then<R, E>(self, f: impl FnOnce(I) -> State<R, E>) -> State<R, E> {
+        match self {
+            State::Idle(i) => f(i),
+            State::Running(r) => State::Running(r),
         }
     }
 }
@@ -590,8 +645,8 @@ where
     F: ThreadModel,
     E: GroupParts<F>,
 {
-    slots: SlotVec<'a, F, E>,
-    data: E::Data<'a>,
+    pub slots: SlotVec<'a, F, E>,
+    pub data: E::Data<'a>,
 }
 
 impl<'a, F, E> BusySlot<'a, F, E>
@@ -655,22 +710,6 @@ where
     pub data: E::SlotData<'a>,
 }
 
-// impl<'a, F, E> Slot<'a, F, E>
-// where
-//     F: ThreadModel,
-//     E: GroupParts<F>,
-// {
-//     pub unsafe fn new(index: usize, data: E::SlotData<'a>, share: E::SlotShare<'a>) -> Self {
-//         Self {
-//             share: F::RefCounter::new(SlotShare {
-//                 index: SyncUnsafeCell(index),
-//                 ext: share,
-//             }),
-//             data,
-//         }
-//     }
-// }
-
 pub struct SlotShare<'a, F, E>
 where
     F: ThreadModel,
@@ -719,7 +758,7 @@ pub trait GroupParts<F: ThreadModel> {
 }
 
 ///标准库SyncUnsafeCell还未稳定
-struct SyncUnsafeCell<T>(UnsafeCell<T>);
+pub(crate) struct SyncUnsafeCell<T>(UnsafeCell<T>);
 
 impl<T> SyncUnsafeCell<T> {
     fn new(t: T) -> Self {

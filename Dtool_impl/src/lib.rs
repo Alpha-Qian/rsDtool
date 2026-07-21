@@ -3,4 +3,3 @@ pub mod downloader;
 
 pub mod executer;
 mod sealed;
-pub(crate) mod utils;
