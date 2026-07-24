@@ -274,11 +274,6 @@ where
         todo!()
     }
 
-    pub fn submit_segment(&self, segment: Segment) -> Reporter<'a, F, P> {
-        let slots = self.slots_mut();
-        todo!()
-    }
-
     fn push_slot(&self, slot: Slot<'a, F, P>) {
         self.slots_mut().push_slot(slot);
     }
@@ -320,6 +315,10 @@ where
 {
     pub unsafe fn new_unchecked(guard: ReporterGuard<'t, 'a, F, P>) -> Self {
         Self(guard)
+    }
+
+    pub fn as_group(&self) -> &BusyGroup<'t, 'a, F, P> {
+        todo!()
     }
 
     pub fn slots(&self) -> &SlotVec<'a, F, P> {
@@ -517,7 +516,7 @@ where
 //-----------------------------------------inner struct-----------------------------------
 
 ///专为下载任务特化的任务管理器，运行时无关
-struct GroupShared<'a, F, E>
+pub(crate) struct GroupShared<'a, F, E>
 where
     F: ThreadModel,
     E: GroupParts<F>,

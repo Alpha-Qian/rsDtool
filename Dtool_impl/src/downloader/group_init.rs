@@ -1,94 +1,86 @@
+use auto_enums::
 use crate::{
-    base::{family::ThreadModel, request_info::RequestInfo, segment::Segment},
+    base::{
+        family::ThreadModel, group_construct::State, request_info::RequestInfo, segment::Segment,
+    },
     downloader::{
-        group_async_parts::GroupShare,
-        group_download_methold::{
-            IntoDownloader, RawDownloadUnInjected, SegmentDownload, SegmentProvider,
-        },
+        group_async_parts::TaskShare,
+        group_download_methold::{RawDownloadUnInjected, SegmentDownload, SegmentResume},
         group_manager::{IdleManager, RunningManager},
+        group_worker::SegmentWorker,
     },
 };
 
-mod seald {}
 
-pub(crate) trait ManagerInitExt {
-    fn init<M: ThreadModel, E>(
-        self,
-        idle: IdleManager<E, M>,
-    ) -> (RunningManager<E, M>, impl Iterator<Item = impl Future>);
-}
-
-trait ManagerInit {
-    type SegmentIter: Iterator<Item = Segment>;
-
-    fn into_initer(self) -> RawIniter<Self::SegmentIter>;
-}
-
-struct NewIniter<I, P> {
+struct RawIniter<I, R> {
     info: RequestInfo,
-
     segments: I,
-    segment_providers: P, //P::next -> impl SegmentProviders
+    resumers: R,
 }
 
-impl<I, P> NewIniter<I, P>
+impl<I, R> RawIniter<I, R>
 where
     I: Iterator<Item = Segment>,
-    P: Iterator<Item: SegmentProvider>,
+    R: Iterator<Item: SegmentResume>,
 {
-    fn init<E, D: IntoDownloader, M: ThreadModel>(
+    fn init<M: ThreadModel, T: SegmentDownload>(
         self,
-        idle: IdleManager<E, M>,
-    ) -> (RunningManager<E, M>, impl Iterator<Item: Future>) {
-        // fn() -> impl Future<Item: Any> "Associated Type Bounds" (ATB)语法，好像哪里可以用到忘了
-        todo!()
-    }
-}
+        idle_manager: IdleManager<<R::Item as SegmentResume>::Error, M>,
+    ) -> RunningManager<<R::Item as SegmentResume>::Error, M> {
 
-///原始的初始化器
-struct RawIniter<I, T> {
-    info: RequestInfo,
-    segments: I,
-    tasks: T,
-}
 
-impl<I: Iterator<Item = Segment>, T> RawIniter<I, T> {
-    pub fn new(info: RequestInfo, segments: impl IntoIterator<IntoIter = I>) -> Self {
-        RawIniter {
-            info,
-            segments: segments.into_iter(),
+        enum FutureTypes<T, T1>{
+            A(T),
+            B(T1)
+        }
+
+        impl<T, U> FutureTypes<T, U>
+        where
+            T: Future, U: Future<Output = T>,
+        {
+            fn t(t: T) -> Self{
+                Self::A(t)
+            }
+
+            fn u(u: U) -> Self {
+                Self::B(b)
+            }
+        }
+
+        impl<T, U> Future for FutureTypes<T, U>
+        where
+            T: Future, U: Future<Output = T::Output>
+        {
+
+            type Output = T::Output;
+
+            fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+                let this = unsafe { self.get_unchecked_mut() };
+                match this{
+                    Self::A(a) => a.poll(cx),
+                    Self::B(b) => b.poll(cx),
+                }
+            }
+        }
+
+
+        let manager = idle_manager.into_done_running_manager();
+        for i in self.resumers.next() {
+            let (segment, downloader) = i.resume();
+            let share = manager.clone_share();
+            let State::Running((manager, segment_worker)) = manager.map_group(|busy_group| {
+                let reporter = busy_group.submit_segment(segment);
+                let segment_worker = SegmentWorker::new(reporter, share);
+                return segment_worker;
+            }) else {
+                panic!()
+            };
+        }
+
+        for i in self.segments.next() {
+            T::Exe
         }
     }
-
-    ///为了避免ManagerInit的重复实现
-    fn init_privied<E, M: ThreadModel>(
-        self,
-        idle_manager: IdleManager<E, M>,
-    ) -> (FutureIter<E, M>, RunningManager<E, M>) {
-        //let abort_signal = M::RefCounter::new(M::AtomicCell::new(bool));
-        let data_share = M::RefCounter::new(GroupShare::new());
-        let Some(frist) = self.segments.next() else {
-            return RunningManager {
-                group: idle_manager.0,
-                share: data_share,
-            };
-        };
-
-        todo!()
-    }
-}
-
-impl<T: ManagerInit> ManagerInitExt for T {
-    fn init<M: ThreadModel, E>(self, idle: IdleManager<E, M>) -> RunningManager<E, M> {
-        let raw = self.into_initer();
-        raw.init_privied(idle)
-    }
-}
-
-trait DownloadIter: Iterator
-where
-    Self::Item: RawDownloadUnInjected,
-{
 }
 
 struct ResumeInfo;

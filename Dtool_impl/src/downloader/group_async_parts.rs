@@ -5,11 +5,10 @@ use std::{
 use radium::Radium;
 
 use crate::base::{
-    base_error::{Aborted, MayAbort, RawError, SuperError},
     family::ThreadModel,
     group_construct::{
-        BusyGroup, BusyReporter, DownloadGroup, GroupGuard, GroupParts, IdleGroup, IdleReporter,
-        Reporter, ReporterBusy, ReporterGuard, Slot, SlotShare, SlotVec,
+        BusyGroup, BusyReporter, DownloadGroup, GroupGuard, GroupParts, GroupShared, IdleGroup,
+        IdleReporter, Reporter, ReporterGuard, Slot, SlotShare, SlotVec,
     },
     request_info::RequestInfo,
     segment::Segment,
@@ -30,10 +29,12 @@ pub type IdleReporter2<'a, E, M> = IdleReporter<'a, 'static, M, AsyncParts<E>>;
 pub type Slot2<E, M> = Slot<'static, M, AsyncParts<E>>;
 pub type SlotVec2<E, M> = SlotVec<'static, M, AsyncParts<E>>;
 
+pub type GroupShare2<E, M> = GroupShared<'static, M, AsyncParts<E>>;
+pub type SlotShare2<E, M> = SlotShare<'static, M, AsyncParts<E>>;
 pub struct AsyncParts<E>(PhantomData<E>);
 
 impl<F: ThreadModel, E> GroupParts<F> for AsyncParts<E> {
-    type StaticData<'a> = GroupShareData<F>;
+    type StaticData<'a> = GroupStaticData<F>;
 
     type Result<'a> = Option<Residual<E>>; //运行结果
     type Data<'a> = RunningData; //唤醒器
@@ -42,11 +43,12 @@ impl<F: ThreadModel, E> GroupParts<F> for AsyncParts<E> {
     type SlotShare<'a> = SlotShareData<F>; //进度，取消标志
 }
 
-pub struct GroupShare<M: ThreadModel> {
+///Manager中的一次性数据
+pub struct TaskShare<M: ThreadModel> {
     pub abort_single: M::AtomicCell<bool>,
 }
 
-impl<M: ThreadModel> GroupShare<M> {
+impl<M: ThreadModel> TaskShare<M> {
     pub fn new() -> Self {
         Self {
             abort_single: M::AtomicCell::new(false),
@@ -54,13 +56,14 @@ impl<M: ThreadModel> GroupShare<M> {
     }
 }
 
-struct GroupShareData<F: ThreadModel> {
+struct GroupStaticData<F: ThreadModel> {
     info: RequestInfo,
     progress: F::AtomicCell<u64>,
 }
 
 pub struct RunningData {
     pub(crate) waker: Waker,
+
     pub(crate) info: RequestInfo,
 
     // 延迟结束线程
@@ -68,15 +71,26 @@ pub struct RunningData {
     pub(crate) lazy_cancel_count: usize,
 }
 
-///上次运行失败的残留值
-pub struct Residual<E> {
-    error_or_aborted: Option<E>, //None说明被取消
-    error_segment: Segment,
+// enum IdleState<E> {
+//     Ok,
+//     Error(GroupError<E>),
+// }
+
+struct GroupError<E> {
+    source: E,
+    error_segment: Option<Segment>,
     segments: Vec<Segment>,
 }
 
+///上次运行失败的残留值
+pub struct Residual<E> {
+    pub error_or_aborted: E,
+    pub error_segment: Segment,
+    pub segments: Vec<Segment>,
+}
+
 struct SlotData {
-    end: u64,
+    pub(crate) end: u64,
 }
 
 struct SlotShareData<F: ThreadModel> {
@@ -101,14 +115,14 @@ impl<E, M: ThreadModel> Slot2<E, M> {
     }
 }
 
-impl<'t, E, M: ThreadModel> BusyGroup2<'t, E, M> {
+impl<'t, 'a, E, M: ThreadModel> BusyGroup<'t, 'a, M, AsyncParts<E>> {
     ///任务窃取
     pub fn task_stealing(&self, min: u64) -> Option<Reporter2<E, M>> {
         self.split_the_biggest_slot(min)
             .map(|s| self.submit_segment(s))
     }
 
-    pub fn submit_segment(&self, segment: Segment) -> Reporter2<E, M> {
+    pub fn submit_segment<'s>(&'s self, segment: Segment) -> Reporter<'a, M, AsyncParts<E>> {
         let index = self.slots().len();
 
         let slot_data = SlotData { end: segment.end() };

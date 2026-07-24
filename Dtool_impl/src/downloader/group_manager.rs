@@ -1,36 +1,25 @@
 //!组下载管理器
 
-use std::{
-    error::Error,
-    future::poll_fn,
-    mem::{self, MaybeUninit},
-    ops::Deref,
-    sync::atomic::{AtomicU64, Ordering},
-    task::{Poll, Waker},
-};
+use std::{num::NonZero, ops::Deref, sync::atomic::Ordering, task::Waker};
 
-use futures::task::noop_waker;
 use radium::Radium;
 use reqwest::blocking::Client;
 
 use crate::{
     base::{
         family::ThreadModel,
-        group_construct::{
-            BusyGroup, DownloadGroup, GroupGuard, GroupParts, IdleGroup, Reporter, State,
-        },
-        request_info::RequestInfo,
+        group_construct::{DownloadGroup, GroupGuard, Reporter, State},
         segment::Segment,
     },
     downloader::{
-        group_async_parts::{DownloadGroup2, GroupShare, IdleGroup2, Residual},
-        group_download_methold::{RawDownloadUnInjected, SegmentDownload},
+        group_async_parts::{DownloadGroup2, IdleGroup2, Residual, TaskShare},
+        group_download_methold::{Downloader, SegmentResume},
         group_init::ManagerInitExt,
         group_worker::SegmentWorker,
     },
 };
 
-use crate::downloader::group_async_parts::{AsyncParts, IdleData, RunningData};
+use crate::downloader::group_async_parts::{AsyncParts, Residual, RunningData};
 
 use crate::downloader::group_async_parts::BusyGroup2;
 
@@ -46,62 +35,141 @@ where
 {
     group: DownloadGroup<'static, M, AsyncParts<E>>,
     //abort: M::RefCounter<M::AtomicCell<bool>>,
-    share: M::RefCounter<GroupShare<M>>,
+    task: M::RefCounter<TaskShare<M>>,
 }
 
 impl<M, E> RunningManager<E, M>
 where
     M: ThreadModel,
 {
-    fn new_with<I: ManagerInitExt>(initer: I) -> Self {
+    pub fn new_with<I: ManagerInitExt>(initer: I) -> Self {
         IdleManager::new().init_with(initer)
     }
 
     fn id(&self) -> usize {
-        self.share.deref() as *const _ as usize
+        self.task.deref() as *const _ as usize
     }
 
-    fn take_residual(self) -> MapRunning<(), E, M> {
-        self.map_running(|_| {})
+    pub fn clone_share(&self) -> M::RefCounter<TaskShare<M>> {
+        self.task.clone()
     }
 
-    fn set_waker(self, waker: Waker) -> MapRunning<(), E, M> {
-        self.map_running(|busy| {
+    ///检查下载是否完成
+    pub fn take_residual(self) -> MapRunning<(), E, M> {
+        self.map_group(|_| {})
+    }
+
+    ///设置唤醒器
+    pub fn set_waker(self, waker: Waker) -> MapRunning<(), E, M> {
+        self.map_group(|busy| {
             *busy.busy_data_mut().waker = waker;
         })
     }
 
-    fn abort_all(self) -> MapRunning<(), E, M> {
-        self.map_running(|busy| {
-            self.abort.store(true, Ordering::Relaxed);
+    ///取消全部
+    pub fn abort_all(self) -> MapRunning<Vec<Segment>, E, M> {
+        self.map_group(|busy| {
+            self.task.abort_single.store(true, Ordering::Relaxed);
             let (_, b, c) = busy.into_idle(None);
-            todo!()
+            let segments =
+                b.0.iter()
+                    .map(|slot| {
+                        let end = slot.data.end;
+                        let remain = slot.share.ext.remain.load(Ordering::Relaxed);
+                        return Segment::new(end - remain, NonZero::new(remain).unwrap());
+                    })
+                    .collect();
+            segments
         })
     }
 
-    fn clone_segments(self) -> MapRunning<impl Iterator, E, M> {
-        self.map_running(|busy| {
+    ///克隆分段信息
+    pub fn clone_segments(self) -> MapRunning<impl Iterator, E, M> {
+        self.map_group(|mut busy| {
             let mut segments = Vec::with_capacity(busy.slots().len());
-            for i in busy.slots().0 {
+            for i in busy.slots_mut().0 {
                 segments.push(todo!());
             }
             return segments.into_iter();
         })
     }
 
-    fn new_download_task<D: RawDownloadUnInjected<Error = E>>(self) -> MapRunning<(), E, M> {
-        self.map_running(|busy| todo!())
+    // ///执行任务窃取
+    // pub fn do_stealing_work<D: Downloader<SegmentWorker<E, M>>>(
+    //     self,
+    //     downloader: D,
+    // ) -> MapRunning<Option<impl Future>, E, M> {
+    //     self.map_group(|busy| {
+    //         let Some((max, remain)) = busy.find_max_remain() else {
+    //             return None;
+    //         };
+    //         let new_remain = remain / 2;
+    //         let new_end = max.data.end;
+    //         max.share
+    //             .ext
+    //             .remain
+    //             .fetch_sub(new_remain, Ordering::Relaxed);
+    //         max.data.end -= new_remain;
+    //         let new_segment = Segment::new(new_end - new_remain, NonZero::new(new_remain).unwrap());
+    //         let reporter = busy.submit_segment(new_segment);
+    //         let ctx = SegmentWorker::new(reporter, self.task.clone());
+    //         let future = ctx.work_send_to_executer(downloader);
+    //         return Some(future);
+    //     })
+    // }
+
+    ///执行任务窃取
+    pub fn stealing_work<D: Downloader<SegmentWorker<E, M>>>(
+        self,
+        downloader: D,
+    ) -> MapRunning<Option<impl Future>, E, M> {
+        self.map_manager(|busy, task| {
+            let Some((max, remain)) = busy.find_max_remain() else {
+                return None;
+            };
+            let new_remain = remain / 2;
+            let new_end = max.data.end;
+            max.share
+                .ext
+                .remain
+                .fetch_sub(new_remain, Ordering::Relaxed);
+            max.data.end -= new_remain;
+            let new_segment = Segment::new(new_end - new_remain, NonZero::new(new_remain).unwrap());
+            let reporter = busy.submit_segment(new_segment);
+            (reporter, task)
+        })
+        .map_result(|(reporter, task)| {
+            let ctx = SegmentWorker::new(reporter, task.clone());
+            let future = ctx.work_send_to_executer(downloader);
+            return Some(future);
+        })
     }
 
-    fn add_thread(self, client: Client) {
-        self.map_running(|busy| {
-            busy.slots_mut().push_slot(slot);
+    ///从恢复策略中创建任务
+    pub fn resume_work<R: SegmentResume>(self, resumer: R) -> MapRunning<impl Future, E, M> {
+        let (segment, downloader) = resumer.resume();
+
+        self.map_manager(|group, task| {
+            let reporter = group.submit_segment(segment);
+            (reporter, task)
+        })
+        .map_result(|(r, task)| {
+            let ctx = SegmentWorker::new(r, task.clone());
+            ctx.work_send_to_executer(downloader)
+        })
+    }
+
+    ///创建新的下载句柄
+    pub fn new_segment_worker(self, segment: Segment) -> MapRunning<SegmentWorker<E, M>, E, M> {
+        self.map_group(|busy| {
+            let reporter = busy.submit_segment(segment);
+            SegmentWorker::new(reporter, self.clone_share())
         })
     }
 
     ///最基本操作
-    fn map_running<T>(self, f: impl FnOnce(BusyGroup2<'_, E, M>) -> T) -> MapRunning<T, E, M> {
-        let guard: GroupGuard<'_, 'static, M, AsyncParts<E>> = self.0.lock();
+    pub fn map_group<T>(self, f: impl FnOnce(BusyGroup2<'_, E, M>) -> T) -> MapRunning<T, E, M> {
+        let guard: GroupGuard<'_, 'static, M, AsyncParts<E>> = self.group.lock();
         match guard.state() {
             State::Running(r) => {
                 let t = f(r);
@@ -115,6 +183,27 @@ where
         }
     }
 
+    pub fn map_manager<T>(
+        self,
+        f: impl FnOnce(BusyGroup2<'_, E, M>, &M::RefCounter<TaskShare<M>>) -> T,
+    ) -> MapRunning<T, E, M> {
+        let share = &self.task;
+        let guard = self.lock_guard();
+        match guard.state() {
+            State::Running(r) => {
+                let t = f(r, share);
+                return MapRunning::Running((self, t));
+            }
+
+            State::Idle(mut i) => {
+                let residual = i.idle_data_mut().take();
+                let idle = IdleManager(self.group);
+                return MapRunning::Idle(RunResult::new(idle, residual));
+            }
+        }
+    }
+
+    ///
     pub fn lock_guard(&self) -> GroupGuard<'_, 'static, M, AsyncParts<E>> {
         self.0.lock()
     }
@@ -238,16 +327,31 @@ where
         //因为IdleManager的结果为None，所以能直接转换为RunningManager
         RunningManager {
             group: self.0,
-            share: M::RefCounter::new(GroupShare::new()),
+            task: M::RefCounter::new(TaskShare::new()),
         }
     }
 }
 
-trait ManagerVisit {
-    async fn visit<M: ThreadModel, E>(
-        manager: RunningManager<E, M>,
-    ) -> State<RunningManager<E, M>, IdleManager<E, M>>;
-}
+// struct RunningManagerGuard<'a, E, M: ThreadModel> {
+//     group: BusyGroup2<'a, E, M>,
+//     share: &'a M::RefCounter<GroupShare<M>>,
+// }
+
+// impl<'a, E, M: ThreadModel> RunningManagerGuard<'a, E, M> {
+//     fn create_new_worker(&self) -> SegmentWorker<E, M> {
+//         todo!()
+//     }
+// }
+
+// struct ManagerHaveResult<'a, E, M: ThreadModel> {
+//     group: BusyGroup2<'a, E, M>,
+// }
+
+// // trait ManagerVisit {
+// //     async fn visit<M: ThreadModel, E>(
+// //         manager: RunningManager<E, M>,
+// //     ) -> State<RunningManager<E, M>, IdleManager<E, M>>;
+// // }
 
 enum Manager<E, M: ThreadModel> {
     Running(RunningManager<E, M>),

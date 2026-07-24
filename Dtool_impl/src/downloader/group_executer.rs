@@ -1,12 +1,6 @@
-use ouroboros::self_referencing;
-use std::marker::PhantomData;
-
 use crate::{
-    base::{family::ThreadModel, group_construct::Slot, segment::Segment},
-    downloader::{
-        group_async_parts::{AsyncParts, BusyGroup2, DownloadGroup2},
-        group_download_methold::SegmentDownload,
-    },
+    base::{family::ThreadModel, segment::Segment},
+    downloader::group_async_parts::BusyGroup2,
 };
 
 // #[self_referencing]

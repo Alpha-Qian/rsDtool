@@ -14,3 +14,4 @@ radium = "1.1.1"
 yoke = "0.8.3"
 stable_deref_trait = { version = "1.2", features = ["std"] }
 ouroboros = "0.18.5"
+auto_enums = "0.8.9"

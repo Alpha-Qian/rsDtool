@@ -12,6 +12,7 @@ mod group_executer;
 mod group_init;
 mod group_manager;
 mod group_manager_monad;
+mod group_new_monad;
 mod group_scheduler;
 mod group_timeout;
 mod group_too_slow_timeout;

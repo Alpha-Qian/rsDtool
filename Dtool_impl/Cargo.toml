@@ -14,9 +14,10 @@ clap = "4.5.40"
 thiserror = { workspace = true }
 futures = { workspace = true }
 scopeguard = {workspace = true}
-radium = {workspace = true}
+radium = { workspace = true }
 bytes = "1.11.1"
 pin-project = "1.1.11"
 yoke = { workspace = true}
 stable_deref_trait = { workspace = true }
 ouroboros = { workspace = true }
+auto_enums = { workspace = true }
