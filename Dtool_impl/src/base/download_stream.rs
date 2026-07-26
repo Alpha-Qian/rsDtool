@@ -23,7 +23,7 @@ pub enum NetWorkErrorType{
 }
 
 trait NetWorkError{
-    fn type(&self) -> NetWorkErrorType {
+    fn error_type(&self) -> NetWorkErrorType {
         NetWorkErrorType::Unkown
     }
 }

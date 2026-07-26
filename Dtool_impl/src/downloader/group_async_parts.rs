@@ -43,7 +43,6 @@ impl<F: ThreadModel, E> GroupParts<F> for AsyncParts<E> {
     type SlotShare<'a> = SlotShareData<F>; //进度，取消标志
 }
 
-///Manager中的一次性数据
 pub struct TaskShare<M: ThreadModel> {
     pub abort_single: M::AtomicCell<bool>,
 }
@@ -71,11 +70,6 @@ pub struct RunningData {
     pub(crate) lazy_cancel_count: usize,
 }
 
-// enum IdleState<E> {
-//     Ok,
-//     Error(GroupError<E>),
-// }
-
 struct GroupError<E> {
     source: E,
     error_segment: Option<Segment>,
@@ -95,7 +89,7 @@ struct SlotData {
 
 struct SlotShareData<F: ThreadModel> {
     pub(crate) abort: F::AtomicCell<bool>,
-    pub(crate) remain: F::AtomicCell<u64>,
+    pub(crate) remain: F::AtomicCell<i64>,
 }
 
 impl<E, M: ThreadModel> Slot2<E, M> {
@@ -107,22 +101,22 @@ impl<E, M: ThreadModel> Slot2<E, M> {
 }
 
 impl<E, M: ThreadModel> Slot2<E, M> {
-    fn load_remain(&self, order: Ordering) -> u64 {
+    fn load_remain(&self, order: Ordering) -> i64 {
         self.share.ext.remain.load(order)
     }
-    fn remain(&self) -> &M::AtomicCell<u64> {
+    fn remain(&self) -> &M::AtomicCell<i64> {
         &self.share.ext.remain
     }
 }
 
-impl<'t, 'a, E, M: ThreadModel> BusyGroup<'t, 'a, M, AsyncParts<E>> {
+impl<'t, E, M: ThreadModel> BusyGroup2<'t, E, M> {
     ///任务窃取
     pub fn task_stealing(&self, min: u64) -> Option<Reporter2<E, M>> {
         self.split_the_biggest_slot(min)
             .map(|s| self.submit_segment(s))
     }
 
-    pub fn submit_segment<'s>(&'s self, segment: Segment) -> Reporter<'a, M, AsyncParts<E>> {
+    pub fn submit_segment<'s>(&'s self, segment: Segment) -> Reporter2<E, M> {
         let index = self.slots().len();
 
         let slot_data = SlotData { end: segment.end() };

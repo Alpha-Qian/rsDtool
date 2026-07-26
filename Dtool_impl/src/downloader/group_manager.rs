@@ -3,23 +3,22 @@
 use std::{num::NonZero, ops::Deref, sync::atomic::Ordering, task::Waker};
 
 use radium::Radium;
-use reqwest::blocking::Client;
 
 use crate::{
     base::{
         family::ThreadModel,
-        group_construct::{DownloadGroup, GroupGuard, Reporter, State},
+        group_construct::{DownloadGroup, GroupGuard, State},
         segment::Segment,
     },
     downloader::{
-        group_async_parts::{DownloadGroup2, IdleGroup2, Residual, TaskShare},
+        group_async_parts::{DownloadGroup2, IdleGroup2, Reporter2, Residual, TaskShare},
         group_download_methold::{Downloader, SegmentResume},
         group_init::ManagerInitExt,
         group_worker::SegmentWorker,
     },
 };
 
-use crate::downloader::group_async_parts::{AsyncParts, Residual, RunningData};
+use crate::downloader::group_async_parts::AsyncParts;
 
 use crate::downloader::group_async_parts::BusyGroup2;
 
@@ -66,67 +65,63 @@ where
         })
     }
 
+    // ///取消全部
+    // pub fn abort_all(self) -> MapRunning<Vec<Segment>, E, M> {
+    //     self.map_group(|busy| {
+    //         self.task.abort_single.store(true, Ordering::Relaxed);
+    //         let (_, b, c) = busy.into_idle(None);
+    //         let segments =
+    //             b.0.iter()
+    //                 .map(|slot| {
+    //                     let end = slot.data.end;
+    //                     let remain = slot.share.ext.remain.load(Ordering::Relaxed);
+    //                     return Segment::new(end - remain, NonZero::new(remain).unwrap());
+    //                 })
+    //                 .collect();
+    //         segments
+    //     })
+    // }
+
     ///取消全部
     pub fn abort_all(self) -> MapRunning<Vec<Segment>, E, M> {
-        self.map_group(|busy| {
-            self.task.abort_single.store(true, Ordering::Relaxed);
-            let (_, b, c) = busy.into_idle(None);
-            let segments =
-                b.0.iter()
-                    .map(|slot| {
-                        let end = slot.data.end;
-                        let remain = slot.share.ext.remain.load(Ordering::Relaxed);
-                        return Segment::new(end - remain, NonZero::new(remain).unwrap());
-                    })
-                    .collect();
-            segments
+        self.map_manager(|busy, task| {
+            task.abort_single.store(true, Ordering::Relaxed);
+            let (_, slots, data) = busy.into_idle(None);
+            (slots, data)
         })
+        .map_result(|(slots, data)| {
+            slots.0.iter()
+                .map(|slot| {
+                    let end = slot.data.end;
+                    let remain = slot.share.ext.remain.load(Ordering::Relaxed);
+                    return Segment::new(end - remain, NonZero::new(remain).unwrap());
+                })
+                .collect()
+        }) 
     }
 
     ///克隆分段信息
     pub fn clone_segments(self) -> MapRunning<impl Iterator, E, M> {
         self.map_group(|mut busy| {
             let mut segments = Vec::with_capacity(busy.slots().len());
-            for i in busy.slots_mut().0 {
+            for i in busy.slots().0.iter() {
                 segments.push(todo!());
             }
             return segments.into_iter();
         })
     }
 
-    // ///执行任务窃取
-    // pub fn do_stealing_work<D: Downloader<SegmentWorker<E, M>>>(
-    //     self,
-    //     downloader: D,
-    // ) -> MapRunning<Option<impl Future>, E, M> {
-    //     self.map_group(|busy| {
-    //         let Some((max, remain)) = busy.find_max_remain() else {
-    //             return None;
-    //         };
-    //         let new_remain = remain / 2;
-    //         let new_end = max.data.end;
-    //         max.share
-    //             .ext
-    //             .remain
-    //             .fetch_sub(new_remain, Ordering::Relaxed);
-    //         max.data.end -= new_remain;
-    //         let new_segment = Segment::new(new_end - new_remain, NonZero::new(new_remain).unwrap());
-    //         let reporter = busy.submit_segment(new_segment);
-    //         let ctx = SegmentWorker::new(reporter, self.task.clone());
-    //         let future = ctx.work_send_to_executer(downloader);
-    //         return Some(future);
-    //     })
-    // }
-
     ///执行任务窃取
     pub fn stealing_work<D: Downloader<SegmentWorker<E, M>>>(
         self,
+        min_length: u64,
         downloader: D,
     ) -> MapRunning<Option<impl Future>, E, M> {
         self.map_manager(|busy, task| {
-            let Some((max, remain)) = busy.find_max_remain() else {
+            let Some((max, remain)) = busy.find_max_remain(min_length) else {
                 return None;
             };
+
             let new_remain = remain / 2;
             let new_end = max.data.end;
             max.share
@@ -136,12 +131,14 @@ where
             max.data.end -= new_remain;
             let new_segment = Segment::new(new_end - new_remain, NonZero::new(new_remain).unwrap());
             let reporter = busy.submit_segment(new_segment);
-            (reporter, task)
+            Some((reporter, task.clone()))
         })
-        .map_result(|(reporter, task)| {
-            let ctx = SegmentWorker::new(reporter, task.clone());
-            let future = ctx.work_send_to_executer(downloader);
-            return Some(future);
+        .map_result(|t| {
+            t.map(|(reporter, task)| {
+                let ctx = SegmentWorker::new(reporter, task);
+                let futures = ctx.work_send_to_executer(downloader);
+                futures
+            })
         })
     }
 
@@ -183,10 +180,10 @@ where
         }
     }
 
-    pub fn map_manager<T>(
-        self,
-        f: impl FnOnce(BusyGroup2<'_, E, M>, &M::RefCounter<TaskShare<M>>) -> T,
-    ) -> MapRunning<T, E, M> {
+    pub fn map_manager<T, F>(self, f: F) -> MapRunning<T, E, M>
+    where
+        F: FnOnce(BusyGroup2<'_, E, M>, & M::RefCounter<TaskShare<M>>) -> T,
+    {
         let share = &self.task;
         let guard = self.lock_guard();
         match guard.state() {
@@ -285,6 +282,18 @@ impl<E, M: ThreadModel> RunResult<E, M> {
     }
 }
 
+
+struct BusyResult<T, E, M: ThreadModel> {
+    manager: RunningManager<E, M>,
+    result: T
+}
+
+impl<T, E, M: ThreadModel> BusyResult<T, E, M> {
+    
+}
+
+
+
 /// 主要进行下载任务的初始化
 ///
 /// 表示未运行且已取出结果的Group
@@ -332,26 +341,105 @@ where
     }
 }
 
-// struct RunningManagerGuard<'a, E, M: ThreadModel> {
-//     group: BusyGroup2<'a, E, M>,
-//     share: &'a M::RefCounter<GroupShare<M>>,
-// }
 
-// impl<'a, E, M: ThreadModel> RunningManagerGuard<'a, E, M> {
-//     fn create_new_worker(&self) -> SegmentWorker<E, M> {
-//         todo!()
-//     }
-// }
 
-// struct ManagerHaveResult<'a, E, M: ThreadModel> {
-//     group: BusyGroup2<'a, E, M>,
-// }
+struct ManagerProject<'a, E, M: ThreadModel>{
+    group: BusyGroup2<E, M>,
+    task: &'a M::RefCounter<TaskShare<M>>
+}
 
-// // trait ManagerVisit {
-// //     async fn visit<M: ThreadModel, E>(
-// //         manager: RunningManager<E, M>,
-// //     ) -> State<RunningManager<E, M>, IdleManager<E, M>>;
-// // }
+impl<'a, E, M: ThreadModel> ManagerProject<'a, E, M> {
+    fn new(busy: BusyGroup2<E, M>, task: &'a M::RefCounter<TaskShare<M>>) -> Self {
+        Self { group: busy, task}
+    }
+    
+    fn group(&self) -> &BusyGroup2<E, M> {
+        &self.group
+    }
+
+    fn task(&self) -> &M::RefCounter<TaskShare<M>> {
+        self.task
+    }
+
+    ///注册分段
+    pub fn submit_segment(&self, segment: Segment) -> SegmentWorker<E, M> {
+        let reporter = self.group.submit_segment(segment);
+        SegmentWorker::new(reporter, self.task.clone())
+    }
+
+    ///批量注册分段
+    /// return injecter
+    pub fn submit_segments(&self, segments: impl IntoIterator<Item = Segment>) -> impl Iterator<Item = SegmentWorker<E, M>> {
+        segments
+            .into_iter()
+            .map(|segment| {
+                let reporter = self.group.submit_segment(segment);
+                SegmentWorker::new(reporter, self.task.clone())
+            })
+    }
+
+    pub fn release_lock(self) -> &'a M::RefCounter<TaskShare<M>> {
+        self.task
+    }
+
+    pub fn into_group(self) -> BusyGroup2<E, M> {
+        self.group
+    }
+
+    pub fn into_raw(self) -> (BusyGroup2<E, M>, &'a M::RefCounter<TaskShare<M>>) {
+        (self.group, self.task)
+    }
+
+    
+    
+    // ///执行任务窃取
+    // fn stealing_work<D: Downloader>(&self, downloader: D, min_length: u64) -> impl Future{
+    //     todo!()
+    // }
+
+    // ///从恢复器中创建任务
+    // fn resume_work<D: SegmentResume>(&self, resume: D) -> impl Future{
+    //     todo!()
+    // }
+
+    // fn batch_resume_work(&self) -> impl Iterator<Item: Future> {
+    //     todo!()
+    // }
+
+    // fn batch_execute_segment(&self) -> impl Iterator<Item: Future> {
+    //     todo!()
+    // }
+    
+
+    // /// 基本方法
+    // /// 创建Segment任务
+    // fn execute_segment<D: Downloader>(&self, downloader: D, segment: Segment) -> impl Future {
+    //     let reporter = self.group.submit_segment(segment);
+        
+    // }
+
+    
+
+    ///取消所有
+    fn abort_all(self) {
+        todo!()
+    }
+
+    ///取消所有
+    fn save_and_abort_all(self) -> Vec<Segment> {
+        let segments = self.group();
+        self.abort_all();
+        todo!()
+    }
+
+    // fn abort_all_but_dont_into_idle(self) {
+    //     todo!()
+    // }
+    
+}
+
+
+
 
 enum Manager<E, M: ThreadModel> {
     Running(RunningManager<E, M>),

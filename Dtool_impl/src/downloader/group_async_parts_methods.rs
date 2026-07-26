@@ -1,7 +1,7 @@
 struct AsyncBusyGroup
 
 
-use std::sync::atomic::Ordering;
+use std::{num::NonZero, sync::atomic::Ordering};
 
 use radium::Radium;
 
@@ -13,7 +13,7 @@ use crate::{
     },
 };
 
-impl<'t, 'a , E, M: ThreadModel> BusyGroup<'t, 'a, M, AsyncParts<E>>{
+impl<'a, E, M: ThreadModel> BusyGroup2<'a, E, M> {
     fn strealing_context<C: DownloadContext>(
         &self,
         min: u64,
@@ -37,18 +37,19 @@ impl<'t, 'a , E, M: ThreadModel> BusyGroup<'t, 'a, M, AsyncParts<E>>{
         todo!()
     }
 
-    pub fn find_max_remain(&self) -> Option<(&Slot2<E, M>, u64)> {
-        let max = self.slots().0
+    pub fn find_max_remain(&self, min_length: u64) -> Option<(&Slot2<E, M>, u64)> {
+        self.slots().0
             .iter()
             .map(|s| (s, s.share.ext.remain.load(Ordering::Relaxed)))
-            .max_by_key(|t| t.1);
-        max
+            .max_by_key(|t| t.1)
+            .filter(|t| t.1 > min_length)
         //max.map(|t| t.0)
     }
 }
 
-impl<'t, 'a, F, P> BusyGroup<'t, 'a, F, P> {
-    pub fn find_max_remain(&self) -> Option<(&Slot2<E, M>, u64)> { // 注意这里 E 和 M 可能报错，需根据实际调整
-        todo!()
-    }
+
+pub fn into_no_zero(remain: i64) -> Option<NonZero<u64>> {
+    u64::try_from(remain)
+        .ok()
+        .and_then(NonZero::new)
 }

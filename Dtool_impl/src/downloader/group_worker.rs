@@ -14,9 +14,8 @@ use crate::base::{
 use crate::downloader::group_async_parts::{
     AsyncParts, BusyGroup2, Reporter2, Residual, SlotShare2, TaskShare,
 };
-use crate::downloader::group_download_methold::{
-    DownloadContext, Downloader, RawDownloadUnInjected,
-};
+use crate::downloader::group_download_methold::{DownloadContext, Downloader};
+use crate::downloader::group_downloader_interface::DownloadContext;
 
 struct DownloadSegmentError {
     segment: Segment,
@@ -26,6 +25,7 @@ struct DownloadSegmentError {
 pub struct SegmentWorker<E, M: ThreadModel> {
     reporter: Reporter<'static, M, AsyncParts<E>>,
     task: M::RefCounter<TaskShare<M>>,
+    end: u64,
 }
 
 impl<M: ThreadModel, E> SegmentWorker<E, M> {
@@ -36,7 +36,13 @@ impl<M: ThreadModel, E> SegmentWorker<E, M> {
         }
     }
 
-    pub async fn work_send_to_executer<D: Downloader<Self>>(mut self, downloader: D) {
+    pub fn map_group() {
+        todo!()
+    }
+
+    //pub fn map_runnning()
+
+    pub async fn work_send_to_executer<D: Downloader<Self>(mut self, downloader: D) {
         loop {
             let result = downloader.download(&self).await;
             match result {
@@ -135,44 +141,31 @@ impl<M: ThreadModel, E> SegmentWorker<E, M> {
     }
 }
 
+///属于SegmentWorker的单子
+enum SegmentWorkerResult<T, E, M: ThreadModel> {
+    Running {
+        manager: SegmentWorker<E, M>,
+        result: T,
+    },
+    Idle,
+}
+
+impl<T, E, M: ThreadModel> SegmentWorkerResult<T, E, M> {
+    fn map_result<U>(self, f: impl FnOnce(T) -> U) -> SegmentWorkerResult<U, E, M> {
+        todo!()
+    }
+
+    fn into_raw(self) -> Option<(SegmentWorker<E, M>, T)> {
+        todo!()
+    }
+}
+
 impl<E, M: ThreadModel> DownloadContext for SegmentWorker<E, M> {
-    fn reporter_downloaded(&self, length: usize) -> i64 {
-        self.reporter
-            .slot_share
-            .ext
-            .remain
-            .fetch_sub(length as u64, Ordering::Release) as i64
+    fn remain(&self) -> &impl Radium<Item = i64> {
+        &self.reporter.slot_share.ext.remain
     }
 
     fn is_aborted(&self) -> bool {
         self.task.abort_single.load(Ordering::Relaxed)
-    }
-}
-
-async fn working_example<E, M: ThreadModel, D: RawDownloadUnInjected<Error = E>>(
-    mut worker: SegmentWorker<E, M>,
-    downloader: impl Downloader<SegmentWorker<E, M>>,
-) {
-    //segment loop
-    loop {
-        let result = D::download_segment(&mut worker).await;
-        match result {
-            Ok(ControlFlow::Continue(())) => {
-                //分段完成
-
-                //尝试任务窃取
-                let ControlFlow::Continue(w) = worker.on_segment_downloaded_ok() else {
-                    return;
-                };
-                worker = w;
-            }
-            Ok(ControlFlow::Break(())) => {
-                //被取消
-                return;
-            }
-            Err(e) => {
-                worker.on_unresumable_error(e);
-            }
-        }
     }
 }

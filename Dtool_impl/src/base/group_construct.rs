@@ -354,7 +354,7 @@ where
     }
 
     ///子任务中止整个下载组
-    pub fn into_idle(self, idle: P::Result<'a>) -> IdleReporter<'a, F, P> {
+    pub fn into_idle(self, idle: P::Result<'a>) -> IdleReporter<'t, 'a, F, P> {
         let guard = self.0;
         let locked = unsafe { &mut *guard.0.group.locked.get() };
         *locked.state = State::Idle(todo!());
@@ -864,9 +864,3 @@ where
 // impl  for  {
 
 // }
-
-enum GroupState<M: ThreadModel, P: GroupParts<M>> {
-    Empty,
-    Running(P::Data),
-    Done(P::Result),
-}
